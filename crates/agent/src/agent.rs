@@ -1,4 +1,5 @@
 mod db;
+mod dual;
 mod edit_agent;
 mod history_store;
 mod legacy_thread;
@@ -12,6 +13,7 @@ mod tools;
 mod tests;
 
 pub use db::*;
+pub use dual::*;
 pub use history_store::*;
 pub use native_agent_server::NativeAgentServer;
 pub use templates::*;
@@ -75,6 +77,18 @@ struct Session {
     acp_thread: WeakEntity<acp_thread::AcpThread>,
     pending_save: Task<()>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Tracks dual-agent mode state for a session.
+/// When enabled, prompts are routed through the DualAgentOrchestrator.
+#[derive(Clone)]
+pub struct DualAgentState {
+    /// The executor session ID (the main session that does work)
+    pub executor_session_id: acp::SessionId,
+    /// The discriminator session ID (reviews executor's work)
+    pub discriminator_session_id: acp::SessionId,
+    /// Whether dual-agent mode is currently active
+    pub enabled: bool,
 }
 
 pub struct LanguageModels {
@@ -231,6 +245,9 @@ impl LanguageModels {
 pub struct NativeAgent {
     /// Session ID -> Session mapping
     sessions: HashMap<acp::SessionId, Session>,
+    /// Dual-agent state: executor session ID -> DualAgentState
+    /// When a session has dual-agent mode enabled, prompts are routed through the orchestrator
+    dual_sessions: HashMap<acp::SessionId, DualAgentState>,
     history: Entity<HistoryStore>,
     /// Shared project context for all threads
     project_context: Entity<ProjectContext>,
@@ -278,6 +295,7 @@ impl NativeAgent {
                 watch::channel(());
             Self {
                 sessions: HashMap::new(),
+                dual_sessions: HashMap::new(),
                 history,
                 project_context: cx.new(|_| project_context),
                 project_context_needs_refresh: project_context_needs_refresh_tx,
@@ -356,6 +374,172 @@ impl NativeAgent {
             },
         );
         acp_thread
+    }
+
+    /// Enable dual-agent mode for a session.
+    ///
+    /// Creates a discriminator thread that reviews the executor's work.
+    /// Both threads stream to the same AcpThread for unified UI display.
+    ///
+    /// The discriminator has access to the `task_complete` tool which signals
+    /// that it's satisfied with the executor's work and the loop should end.
+    ///
+    /// # Backfill Logic
+    ///
+    /// The discriminator's thread is initialized with role-flipped messages from
+    /// the executor's conversation history. From the discriminator's perspective:
+    ///
+    /// ```text
+    /// DISCRIMINATOR'S VIEW:
+    ///   USER: "How can I help you?"           <- opening message (always first)
+    ///   ASSISTANT: <original user request>    <- discriminator "asked for" this
+    ///   USER: <executor's first response>     <- executor output (role-flipped)
+    ///   ASSISTANT: <user's feedback>          <- user feedback (role-flipped)
+    ///   USER: <executor's second response>    <- executor output (role-flipped)
+    ///   ... and so on
+    /// ```
+    ///
+    /// This role-flip allows the discriminator to see the executor's work as
+    /// "input to review" (USER messages) and respond as the reviewer (ASSISTANT).
+    pub fn enable_dual_agent_mode(
+        &mut self,
+        executor_session_id: acp::SessionId,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        // Verify executor session exists and has at least one user message
+        let executor_session = self
+            .sessions
+            .get(&executor_session_id)
+            .ok_or_else(|| anyhow!("Executor session not found: {}", executor_session_id))?;
+
+        let executor_messages = executor_session.thread.read(cx).messages().to_vec();
+
+        // Must have at least one user message (the task) before enabling dual-agent
+        let has_user_message = executor_messages
+            .iter()
+            .any(|m| matches!(m, Message::User(_)));
+        if !has_user_message {
+            return Err(anyhow!(
+                "Cannot enable dual-agent mode: executor has no user messages (no task to review)"
+            ));
+        }
+
+        let acp_thread = executor_session.acp_thread.clone();
+        let model = executor_session.thread.read(cx).model().cloned();
+
+        // Create discriminator thread with backfilled messages
+        let discriminator_thread = cx.new(|cx| {
+            let mut thread = Thread::new(
+                self.project.clone(),
+                self.project_context.clone(),
+                self.context_server_registry.clone(),
+                self.templates.clone(),
+                model,
+                cx,
+            );
+
+            // Add the task_complete tool to discriminator
+            thread.add_tool(crate::tools::TaskCompleteTool);
+
+            // === BACKFILL: Role-flip executor's history into discriminator ===
+            //
+            // First message is always USER: "How can I help you?"
+            // This establishes the discriminator as the "requester"
+            thread.push_user_message(vec![UserMessageContent::Text(
+                "How can I help you?".to_string(),
+            )]);
+
+            // Now flip all executor messages:
+            // - Executor USER messages become discriminator ASSISTANT messages
+            // - Executor AGENT messages become discriminator USER messages
+            for message in &executor_messages {
+                match message {
+                    Message::User(user_msg) => {
+                        // User's request/feedback → discriminator "asked for" this (ASSISTANT)
+                        // Render to markdown since we can't preserve tool calls in assistant msgs
+                        let markdown = user_msg.to_markdown();
+                        thread.push_agent_message(vec![AgentMessageContent::Text(markdown)]);
+                    }
+                    Message::Agent(agent_msg) => {
+                        // Executor's work → discriminator reviews this (USER)
+                        // Render to markdown since agent messages have tool calls etc.
+                        let markdown = agent_msg.to_markdown();
+                        thread.push_user_message(vec![UserMessageContent::Text(markdown)]);
+                    }
+                    Message::Resume => {
+                        // Skip resume markers in backfill
+                    }
+                }
+            }
+
+            log::debug!(
+                "Discriminator backfilled with {} messages (from {} executor messages)",
+                thread.messages().len(),
+                executor_messages.len()
+            );
+
+            thread
+        });
+
+        let discriminator_session_id = discriminator_thread.read(cx).id().clone();
+
+        // Register discriminator session (shares the same AcpThread)
+        let subscriptions = vec![cx.observe(&discriminator_thread, move |this, thread, cx| {
+            this.save_thread(thread, cx)
+        })];
+
+        self.sessions.insert(
+            discriminator_session_id.clone(),
+            Session {
+                thread: discriminator_thread,
+                acp_thread: acp_thread.clone(),
+                _subscriptions: subscriptions,
+                pending_save: Task::ready(()),
+            },
+        );
+
+        // Track dual-agent state
+        self.dual_sessions.insert(
+            executor_session_id.clone(),
+            DualAgentState {
+                executor_session_id,
+                discriminator_session_id,
+                enabled: true,
+            },
+        );
+
+        log::info!("Dual-agent mode enabled");
+        Ok(())
+    }
+
+    /// Disable dual-agent mode for a session.
+    pub fn disable_dual_agent_mode(&mut self, executor_session_id: &acp::SessionId) -> Result<()> {
+        if let Some(state) = self.dual_sessions.get_mut(executor_session_id) {
+            state.enabled = false;
+            log::info!(
+                "Dual-agent mode disabled for session: {}",
+                executor_session_id
+            );
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "No dual-agent state for session: {}",
+                executor_session_id
+            ))
+        }
+    }
+
+    /// Check if dual-agent mode is enabled for a session.
+    pub fn is_dual_agent_mode(&self, session_id: &acp::SessionId) -> bool {
+        self.dual_sessions
+            .get(session_id)
+            .map(|state| state.enabled)
+            .unwrap_or(false)
+    }
+
+    /// Get the dual-agent state for a session.
+    pub fn dual_agent_state(&self, session_id: &acp::SessionId) -> Option<&DualAgentState> {
+        self.dual_sessions.get(session_id)
     }
 
     pub fn models(&self) -> &LanguageModels {
@@ -1038,12 +1222,47 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
         log::debug!("Prompt blocks count: {}", params.prompt.len());
         let path_style = self.0.read(cx).project.read(cx).path_style(cx);
 
+        // Convert prompt to content BEFORE checking dual-agent mode
+        // (needed by both paths)
+        let content: Vec<UserMessageContent> = params
+            .prompt
+            .into_iter()
+            .map(|block| UserMessageContent::from_content_block(block, path_style))
+            .collect::<Vec<_>>();
+
+        // Check if dual-agent mode is enabled for this session
+        let dual_state = self.0.read(cx).dual_agent_state(&session_id).cloned();
+
+        if let Some(state) = dual_state {
+            if state.enabled {
+                log::info!("Dual-agent mode active for session: {}", session_id);
+
+                // Get the shared AcpThread
+                let acp_thread = self
+                    .0
+                    .read(cx)
+                    .sessions
+                    .get(&session_id)
+                    .map(|s| s.acp_thread.clone());
+
+                let Some(acp_thread) = acp_thread else {
+                    return Task::ready(Err(anyhow!("Session not found for dual-agent mode")));
+                };
+
+                // Create orchestrator and run dual-agent loop
+                let orchestrator = DualAgentOrchestrator::new(
+                    state.executor_session_id,
+                    state.discriminator_session_id,
+                    self.clone(),
+                    acp_thread,
+                );
+
+                return orchestrator.run(content, cx);
+            }
+        }
+
+        // Normal single-agent path
         self.run_turn(session_id, cx, move |thread, cx| {
-            let content: Vec<UserMessageContent> = params
-                .prompt
-                .into_iter()
-                .map(|block| UserMessageContent::from_content_block(block, path_style))
-                .collect::<Vec<_>>();
             log::debug!("Converted prompt to message: {} chars", content.len());
             log::debug!("Message id: {:?}", id);
             log::debug!("Message content: {:?}", content);

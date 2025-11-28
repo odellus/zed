@@ -70,6 +70,10 @@ impl AgentProfile {
         let default_model = base_profile
             .as_ref()
             .and_then(|profile| profile.default_model.clone());
+        // Preserve the base profile's system prompt when cloning into a new profile.
+        let system_prompt = base_profile
+            .as_ref()
+            .and_then(|profile| profile.system_prompt.clone());
 
         let profile_settings = AgentProfileSettings {
             name: name.into(),
@@ -77,6 +81,7 @@ impl AgentProfile {
             enable_all_context_servers,
             context_servers,
             default_model,
+            system_prompt,
         };
 
         update_settings_file(fs, cx, {
@@ -109,6 +114,8 @@ pub struct AgentProfileSettings {
     pub context_servers: IndexMap<Arc<str>, ContextServerPreset>,
     /// Default language model to apply when this profile becomes active.
     pub default_model: Option<LanguageModelSelection>,
+    /// Custom system prompt for this agent profile. If set, replaces the default system prompt.
+    pub system_prompt: Option<Arc<str>>,
 }
 
 impl AgentProfileSettings {
@@ -158,6 +165,7 @@ impl AgentProfileSettings {
                     })
                     .collect(),
                 default_model: self.default_model.clone(),
+                system_prompt: self.system_prompt.clone(),
             },
         );
 
@@ -173,6 +181,7 @@ impl From<AgentProfileContent> for AgentProfileSettings {
             enable_all_context_servers,
             context_servers,
             default_model,
+            system_prompt,
         } = content;
 
         Self {
@@ -184,6 +193,7 @@ impl From<AgentProfileContent> for AgentProfileSettings {
                 .map(|(server_id, preset)| (server_id, preset.into()))
                 .collect(),
             default_model,
+            system_prompt,
         }
     }
 }

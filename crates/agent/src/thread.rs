@@ -920,6 +920,30 @@ impl Thread {
         self.messages.is_empty() && self.title.is_none()
     }
 
+    /// Get the thread's messages for iteration.
+    /// Used for dual-agent backfill (role-flipping executor history into discriminator).
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    /// Add a user message without running a turn.
+    /// Used for dual-agent backfill.
+    pub fn push_user_message(&mut self, content: Vec<UserMessageContent>) {
+        self.messages.push(Message::User(UserMessage {
+            id: UserMessageId::new(),
+            content,
+        }));
+    }
+
+    /// Add an agent message without running a turn.
+    /// Used for dual-agent backfill.
+    pub fn push_agent_message(&mut self, content: Vec<AgentMessageContent>) {
+        self.messages.push(Message::Agent(AgentMessage {
+            content,
+            tool_results: IndexMap::default(),
+        }));
+    }
+
     pub fn model(&self) -> Option<&Arc<dyn LanguageModel>> {
         self.model.as_ref()
     }
@@ -1975,14 +1999,24 @@ impl Thread {
             self.messages.len()
         );
 
-        let system_prompt = SystemPromptTemplate {
-            project: self.project_context.read(cx),
-            available_tools,
-            model_name: self.model.as_ref().map(|m| m.name().0.to_string()),
-        }
-        .render(&self.templates)
-        .context("failed to build system prompt")
-        .expect("Invalid template");
+        // Check if the profile has a custom system prompt
+        let custom_prompt = AgentSettings::get_global(cx)
+            .profiles
+            .get(&self.profile_id)
+            .and_then(|profile| profile.system_prompt.clone());
+
+        let system_prompt = if let Some(custom) = custom_prompt {
+            custom.to_string()
+        } else {
+            SystemPromptTemplate {
+                project: self.project_context.read(cx),
+                available_tools,
+                model_name: self.model.as_ref().map(|m| m.name().0.to_string()),
+            }
+            .render(&self.templates)
+            .context("failed to build system prompt")
+            .expect("Invalid template")
+        };
         let mut messages = vec![LanguageModelRequestMessage {
             role: Role::System,
             content: vec![system_prompt.into()],
@@ -2018,6 +2052,33 @@ impl Thread {
         }
 
         markdown
+    }
+
+    /// Export the last agent turn (since last user message) to markdown.
+    /// Used for dual-agent handoff: executor's output becomes discriminator's input.
+    pub fn export_last_turn(&self) -> String {
+        let mut output = String::new();
+
+        // Find the last user message index
+        let last_user_idx = self
+            .messages
+            .iter()
+            .rposition(|m| matches!(m, Message::User(_) | Message::Resume));
+
+        let start = last_user_idx.map(|i| i + 1).unwrap_or(0);
+
+        for message in &self.messages[start..] {
+            if let Message::Agent(agent_msg) = message {
+                output.push_str(&agent_msg.to_markdown());
+                output.push('\n');
+            }
+        }
+
+        if let Some(pending) = &self.pending_message {
+            output.push_str(&pending.to_markdown());
+        }
+
+        output
     }
 
     fn advance_prompt_id(&mut self) {

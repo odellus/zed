@@ -178,6 +178,8 @@ pub struct AgentProfileContent {
     pub context_servers: IndexMap<Arc<str>, ContextServerPresetContent>,
     /// The default language model selected when using this profile.
     pub default_model: Option<LanguageModelSelection>,
+    /// Custom system prompt for this agent profile. If set, replaces the default system prompt.
+    pub system_prompt: Option<Arc<str>>,
 }
 
 #[skip_serializing_none]
