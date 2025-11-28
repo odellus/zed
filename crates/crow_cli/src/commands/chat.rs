@@ -5,7 +5,7 @@ use gpui::AsyncApp;
 use std::io::{self, Write};
 use std::time::Instant;
 
-use crate::init;
+use crate::init::{self, CrowContext};
 use crate::render::OutputMode;
 
 // Brand colors matching original crow-cli
@@ -32,9 +32,10 @@ fn lime_green(s: &str) -> colored::ColoredString {
 /// Run a single chat message and stream the response
 pub async fn run_chat_command(
     message: String,
-    _new_session: bool,
-    _session_id: Option<String>,
+    new_session: bool,
+    session_id: Option<String>,
     output_mode: OutputMode,
+    auto_mode: bool,
     cx: &mut AsyncApp,
 ) -> Result<()> {
     let start_time = Instant::now();
@@ -44,13 +45,37 @@ pub async fn run_chat_command(
     // Initialize the agent
     let crow = init::initialize(cx).await?;
 
-    // Create a new thread via the NativeAgentConnection
-    let acp_thread = cx
-        .update(|cx| crow.new_thread(cx))?
-        .await
-        .context("Failed to create thread")?;
+    // Either resume an existing session or create a new one
+    let (acp_thread, is_resumed) = if let Some(session_id_str) = session_id {
+        if new_session {
+            anyhow::bail!("Cannot use --new and --session together");
+        }
+        // Resume existing session
+        let session_id = agent_client_protocol::SessionId(session_id_str.into());
+        log::info!("Resuming session: {}", session_id.0);
 
-    log::info!("Thread created, sending message...");
+        let thread = cx
+            .update(|cx| crow.connection.open_thread(session_id.clone(), cx))?
+            .await
+            .context(format!("Failed to open session: {}", session_id.0))?;
+
+        (thread, true)
+    } else {
+        // Create a new thread
+        let thread = cx
+            .update(|cx| crow.new_thread(cx))?
+            .await
+            .context("Failed to create thread")?;
+        (thread, false)
+    };
+
+    log::info!(
+        "Thread {} - sending message...",
+        if is_resumed { "resumed" } else { "created" }
+    );
+
+    // Get session info for display
+    let session_id = cx.update(|cx| acp_thread.read(cx).session_id().clone())?;
 
     // Show header and user message (unless quiet/json mode)
     if output_mode == OutputMode::Verbose {
@@ -59,7 +84,14 @@ pub async fn run_chat_command(
             "{}",
             "═══════════════════════════════════════════════════════════════".dimmed()
         );
-        eprintln!("{}", purple_bold("CROW-CLI"));
+        let mode_str = if auto_mode { " (AUTO)" } else { "" };
+        let resumed_str = if is_resumed { " [resumed]" } else { "" };
+        eprintln!(
+            "{}{}",
+            purple_bold(&format!("CROW-CLI{}", mode_str)),
+            resumed_str.yellow()
+        );
+        eprintln!("{}", format!("Session: {}", session_id.0).dimmed());
         eprintln!(
             "{}",
             "═══════════════════════════════════════════════════════════════".dimmed()
@@ -72,7 +104,29 @@ pub async fn run_chat_command(
         eprintln!();
     }
 
+    // If auto mode, enable dual-agent BEFORE sending the message
+    // This ensures the orchestrator handles the full executor↔discriminator loop
+    if auto_mode {
+        if output_mode == OutputMode::Verbose {
+            eprintln!("{}", "🔄 Enabling auto mode (dual-agent)...".yellow().bold());
+        }
+
+        cx.update(|cx| {
+            crow.agent
+                .update(cx, |agent, cx| agent.enable_dual_agent_mode(session_id.clone(), cx))
+        })??;
+
+        if output_mode == OutputMode::Verbose {
+            eprintln!(
+                "{}",
+                "✓ Auto mode enabled. Orchestrator will handle executor↔discriminator loop.".green()
+            );
+            eprintln!();
+        }
+    }
+
     // Send the prompt and wait for completion
+    // In auto mode, this goes through the DualAgentOrchestrator
     let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent {
         text: message,
         annotations: None,
@@ -97,6 +151,7 @@ pub async fn run_chat_command(
     })?;
 
     // Show footer with stats
+    let total_elapsed = start_time.elapsed();
     if output_mode == OutputMode::Verbose {
         eprintln!();
         eprintln!(
@@ -107,7 +162,7 @@ pub async fn run_chat_command(
             "{} {} tool calls | {:.1}s",
             mint_green("✓").bold(),
             mint_green(&tool_count.to_string()),
-            elapsed.as_secs_f64()
+            total_elapsed.as_secs_f64()
         );
         eprintln!(
             "{}",
@@ -117,6 +172,8 @@ pub async fn run_chat_command(
 
     Ok(())
 }
+
+
 
 /// Render a single thread entry to stdout/stderr
 fn render_entry(

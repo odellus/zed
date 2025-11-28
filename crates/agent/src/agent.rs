@@ -505,6 +505,8 @@ impl NativeAgent {
         );
 
         // Track dual-agent state
+        let exec_id_for_db = executor_session_id.clone();
+        let disc_id_for_db = discriminator_session_id.clone();
         self.dual_sessions.insert(
             executor_session_id.clone(),
             DualAgentState {
@@ -513,6 +515,17 @@ impl NativeAgent {
                 enabled: true,
             },
         );
+
+        // Persist the session pairing for telemetry/observability
+        let database_future = ThreadsDatabase::connect(cx);
+        cx.spawn(async move |_, _| {
+            if let Ok(db) = database_future.await.map_err(|e| anyhow::anyhow!("{}", e)) {
+                db.save_session_pair(exec_id_for_db, disc_id_for_db)
+                    .await
+                    .log_err();
+            }
+        })
+        .detach();
 
         log::info!("Dual-agent mode enabled");
         Ok(())
@@ -550,6 +563,10 @@ impl NativeAgent {
 
     pub fn models(&self) -> &LanguageModels {
         &self.models
+    }
+
+    pub fn history(&self) -> &Entity<HistoryStore> {
+        &self.history
     }
 
     async fn maintain_project_context(
@@ -927,6 +944,18 @@ impl NativeAgentConnection {
 
     pub fn load_thread(&self, id: acp::SessionId, cx: &mut App) -> Task<Result<Entity<Thread>>> {
         self.0.update(cx, |this, cx| this.load_thread(id, cx))
+    }
+
+    pub fn open_thread(
+        &self,
+        id: acp::SessionId,
+        cx: &mut App,
+    ) -> Task<Result<Entity<AcpThread>>> {
+        self.0.update(cx, |this, cx| this.open_thread(id, cx))
+    }
+
+    pub fn history(&self, cx: &App) -> Entity<HistoryStore> {
+        self.0.read(cx).history().clone()
     }
 
     fn run_turn(

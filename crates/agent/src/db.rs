@@ -241,7 +241,7 @@ impl Column for DataType {
     }
 }
 
-pub(crate) struct ThreadsDatabase {
+pub struct ThreadsDatabase {
     executor: BackgroundExecutor,
     connection: Arc<Mutex<Connection>>,
 }
@@ -303,6 +303,17 @@ impl ThreadsDatabase {
             )
         "})?()
         .map_err(|e| anyhow!("Failed to create threads table: {}", e))?;
+
+        // Session pairs table for dual-agent (auto) mode telemetry
+        // Links executor sessions to their discriminator sessions
+        connection.exec(indoc! {"
+            CREATE TABLE IF NOT EXISTS session_pairs (
+                executor_session_id TEXT PRIMARY KEY,
+                discriminator_session_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        "})?()
+        .map_err(|e| anyhow!("Failed to create session_pairs table: {}", e))?;
 
         let db = Self {
             executor,
@@ -422,4 +433,99 @@ impl ThreadsDatabase {
             Ok(())
         })
     }
+
+    /// Save a session pair linking executor to discriminator (for dual-agent/auto mode)
+    pub fn save_session_pair(
+        &self,
+        executor_session_id: acp::SessionId,
+        discriminator_session_id: acp::SessionId,
+    ) -> Task<Result<()>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+            let created_at = Utc::now().to_rfc3339();
+
+            let mut insert = connection.exec_bound::<(Arc<str>, Arc<str>, String)>(indoc! {"
+                INSERT OR REPLACE INTO session_pairs (executor_session_id, discriminator_session_id, created_at)
+                VALUES (?, ?, ?)
+            "})?;
+
+            insert((executor_session_id.0, discriminator_session_id.0, created_at))?;
+
+            Ok(())
+        })
+    }
+
+    /// Get the paired session for a given session ID (works for either executor or discriminator)
+    pub fn get_session_pair(&self, session_id: acp::SessionId) -> Task<Result<Option<SessionPair>>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            // Try to find as executor first
+            let mut select = connection.select_bound::<Arc<str>, (Arc<str>, String)>(indoc! {"
+                SELECT discriminator_session_id, created_at FROM session_pairs WHERE executor_session_id = ? LIMIT 1
+            "})?;
+
+            if let Some((discriminator_id, created_at)) = select(session_id.0.clone())?.into_iter().next() {
+                return Ok(Some(SessionPair {
+                    executor_session_id: session_id,
+                    discriminator_session_id: acp::SessionId(discriminator_id),
+                    created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+                }));
+            }
+
+            // Try to find as discriminator
+            let mut select = connection.select_bound::<Arc<str>, (Arc<str>, String)>(indoc! {"
+                SELECT executor_session_id, created_at FROM session_pairs WHERE discriminator_session_id = ? LIMIT 1
+            "})?;
+
+            let session_id_for_query = session_id.0.clone();
+            if let Some((executor_id, created_at)) = select(session_id_for_query)?.into_iter().next() {
+                return Ok(Some(SessionPair {
+                    executor_session_id: acp::SessionId(executor_id),
+                    discriminator_session_id: session_id,
+                    created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+                }));
+            }
+
+            Ok(None)
+        })
+    }
+
+    /// List all session pairs
+    pub fn list_session_pairs(&self) -> Task<Result<Vec<SessionPair>>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            let mut select = connection.select_bound::<(), (Arc<str>, Arc<str>, String)>(indoc! {"
+                SELECT executor_session_id, discriminator_session_id, created_at FROM session_pairs ORDER BY created_at DESC
+            "})?;
+
+            let rows = select(())?;
+            let mut pairs = Vec::new();
+
+            for (executor_id, discriminator_id, created_at) in rows {
+                pairs.push(SessionPair {
+                    executor_session_id: acp::SessionId(executor_id),
+                    discriminator_session_id: acp::SessionId(discriminator_id),
+                    created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+                });
+            }
+
+            Ok(pairs)
+        })
+    }
+}
+
+/// Represents a paired executor/discriminator session for dual-agent mode
+#[derive(Debug, Clone)]
+pub struct SessionPair {
+    pub executor_session_id: acp::SessionId,
+    pub discriminator_session_id: acp::SessionId,
+    pub created_at: DateTime<Utc>,
 }

@@ -10,6 +10,10 @@ use gpui::Application;
 #[command(name = "crow-cli")]
 #[command(about = "Crow Agent CLI - Run the Zed agent from the command line")]
 struct Cli {
+    /// Print environment variables as JSON (used by shell environment detection)
+    #[arg(long)]
+    printenv: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 
@@ -41,6 +45,10 @@ enum Commands {
         /// Output as JSON
         #[arg(long, short = 'j')]
         json: bool,
+
+        /// Enable auto mode (executor + discriminator dual-agent pattern)
+        #[arg(long, short = 'a')]
+        auto: bool,
     },
 
     /// Start an interactive REPL session
@@ -49,7 +57,13 @@ enum Commands {
         session: Option<String>,
     },
 
-    /// List all sessions
+    /// Session management commands
+    Session {
+        #[command(subcommand)]
+        command: SessionCommands,
+    },
+
+    /// List all sessions (alias for `session list`)
     Sessions,
 
     /// Create a new session
@@ -59,10 +73,60 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum SessionCommands {
+    /// List all sessions
+    List {
+        /// Maximum number of sessions to show
+        #[arg(long, short = 'n', default_value = "20")]
+        limit: usize,
+
+        /// Output as JSON
+        #[arg(long, short = 'j')]
+        json: bool,
+    },
+
+    /// Show session details and messages
+    Show {
+        /// Session ID to show
+        session_id: String,
+
+        /// Output as JSON
+        #[arg(long, short = 'j')]
+        json: bool,
+
+        /// Show only the last N messages
+        #[arg(long, short = 'n')]
+        last: Option<usize>,
+    },
+
+    /// Delete a session
+    Delete {
+        /// Session ID to delete
+        session_id: String,
+
+        /// Skip confirmation
+        #[arg(long, short = 'f')]
+        force: bool,
+    },
+
+    /// Show raw session data (for debugging)
+    Inspect {
+        /// Session ID to inspect
+        session_id: String,
+    },
+}
+
 fn main() {
     env_logger::init();
 
     let cli = Cli::parse();
+
+    // Handle --printenv early (used by shell environment detection)
+    if cli.printenv {
+        util::shell_env::print_env();
+        return;
+    }
 
     // Determine what to run
     let result = match cli.command {
@@ -72,11 +136,17 @@ fn main() {
             session,
             quiet,
             json,
-        }) => run_chat(message.join(" "), new, session, quiet, json),
+            auto,
+        }) => run_chat(message.join(" "), new, session, quiet, json, auto),
 
         Some(Commands::Repl { session }) => run_repl(session),
 
-        Some(Commands::Sessions) => run_list_sessions(),
+        Some(Commands::Session { command }) => run_session_command(command),
+
+        Some(Commands::Sessions) => run_session_command(SessionCommands::List {
+            limit: 20,
+            json: false,
+        }),
 
         Some(Commands::New { title }) => run_new_session(title),
 
@@ -86,7 +156,7 @@ fn main() {
                 // No message either - show help or start REPL
                 run_repl(None)
             } else {
-                run_chat(cli.message.join(" "), false, None, false, false)
+                run_chat(cli.message.join(" "), false, None, false, false, false)
             }
         }
     };
@@ -103,6 +173,7 @@ fn run_chat(
     session_id: Option<String>,
     quiet: bool,
     json: bool,
+    auto: bool,
 ) -> Result<()> {
     if message.is_empty() {
         anyhow::bail!("No message provided. Usage: crow-cli chat \"your message\"");
@@ -123,6 +194,7 @@ fn run_chat(
                 new_session,
                 session_id,
                 output_mode,
+                auto,
                 &mut cx,
             )
             .await;
@@ -156,10 +228,25 @@ fn run_repl(session_id: Option<String>) -> Result<()> {
     Ok(())
 }
 
-fn run_list_sessions() -> Result<()> {
+fn run_session_command(command: SessionCommands) -> Result<()> {
     Application::headless().run(move |cx| {
         cx.spawn(async move |mut cx| {
-            let result = commands::sessions::run_list_sessions_command(&mut cx).await;
+            let result = match command {
+                SessionCommands::List { limit, json } => {
+                    commands::sessions::run_list_sessions_command(limit, json, &mut cx).await
+                }
+                SessionCommands::Show {
+                    session_id,
+                    json,
+                    last,
+                } => commands::sessions::run_show_session_command(session_id, json, last, &mut cx).await,
+                SessionCommands::Delete { session_id, force } => {
+                    commands::sessions::run_delete_session_command(session_id, force, &mut cx).await
+                }
+                SessionCommands::Inspect { session_id } => {
+                    commands::sessions::run_inspect_session_command(session_id, &mut cx).await
+                }
+            };
 
             if let Err(e) = result {
                 eprintln!("Error: {:#}", e);
