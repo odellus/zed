@@ -41,6 +41,7 @@ members = [
     "crates/component",
     "crates/context_server",
     "crates/copilot",
+    "crates/crow_cli",
     "crates/crashes",
     "crates/credentials_provider",
     "crates/dap",

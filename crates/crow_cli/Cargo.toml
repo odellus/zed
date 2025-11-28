@@ -1,0 +1,53 @@
+[package]
+name = "crow_cli"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "crow-cli"
+path = "src/crow_cli.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Zed crates
+agent.workspace = true
+agent_settings.workspace = true
+acp_thread.workspace = true
+agent-client-protocol.workspace = true
+assistant_slash_command.workspace = true
+assistant_text_thread.workspace = true
+client.workspace = true
+clock.workspace = true
+db.workspace = true
+fs.workspace = true
+gpui.workspace = true
+gpui_tokio.workspace = true
+http_client.workspace = true
+language.workspace = true
+language_model.workspace = true
+language_models.workspace = true
+node_runtime.workspace = true
+paths.workspace = true
+project.workspace = true
+prompt_store.workspace = true
+release_channel.workspace = true
+reqwest_client.workspace = true
+settings.workspace = true
+theme.workspace = true
+util.workspace = true
+
+# External crates
+anyhow.workspace = true
+chrono.workspace = true
+clap = { workspace = true, features = ["derive"] }
+colored = "2"
+futures.workspace = true
+log.workspace = true
+env_logger.workspace = true
+rustyline = "14"
+serde.workspace = true
+serde_json.workspace = true
