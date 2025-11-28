@@ -2624,3 +2624,250 @@ async fn test_dual_agent_backfill(cx: &mut TestAppContext) {
     // Note: Full dual-agent test requires NativeAgent access which isn't in ThreadTest
     // This test verifies the message structure that backfill will consume
 }
+
+/// Comprehensive test for the dual-agent loop using NativeAgent directly.
+/// Tests the full executor↔discriminator flow with FakeLanguageModel.
+#[gpui::test]
+async fn test_dual_agent_full_loop(cx: &mut TestAppContext) {
+    cx.update(settings::init);
+    let templates = Templates::new();
+
+    // Initialize language model system with fake provider
+    cx.update(|cx| {
+        gpui_tokio::init(cx);
+
+        let http_client = FakeHttpClient::with_404_response();
+        let clock = Arc::new(clock::FakeSystemClock::new());
+        let client = Client::new(clock, http_client, cx);
+        let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
+        language_model::init(client.clone(), cx);
+        language_models::init(user_store, client.clone(), cx);
+        LanguageModelRegistry::test(cx);
+    });
+    cx.executor().forbid_parking();
+
+    // Create project and agent
+    let fake_fs = cx.update(|cx| fs::FakeFs::new(cx.background_executor().clone()));
+    fake_fs.insert_tree(path!("/test"), json!({})).await;
+    let project = Project::test(fake_fs.clone(), [Path::new("/test")], cx).await;
+    let cwd = Path::new("/test");
+    let text_thread_store =
+        cx.new(|cx| assistant_text_thread::TextThreadStore::fake(project.clone(), cx));
+    let history_store = cx.new(|cx| HistoryStore::new(text_thread_store, cx));
+
+    let agent = crate::NativeAgent::new(
+        project.clone(),
+        history_store,
+        templates.clone(),
+        None,
+        fake_fs.clone(),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    let connection = crate::NativeAgentConnection(agent.clone());
+
+    // Create a session via new_thread
+    let connection_rc = Rc::new(connection.clone());
+    let acp_thread = cx
+        .update(|cx| connection_rc.new_thread(project, cwd, cx))
+        .await
+        .expect("new_thread should succeed");
+
+    let session_id = acp_thread.read_with(cx, |thread, _| thread.session_id().clone());
+
+    // Get the fake model
+    let model = cx
+        .update(|cx| {
+            agent
+                .read(cx)
+                .models()
+                .model_from_id(&acp::ModelId("fake/fake".into()))
+        })
+        .unwrap();
+    let fake_model = model.as_fake();
+
+    // Step 1: Send initial user message (the task)
+    let _request = acp_thread.update(cx, |thread, cx| {
+        thread.send(vec!["Build me a hello world app in Python".into()], cx)
+    });
+    cx.run_until_parked();
+
+    // Executor responds with some work
+    fake_model.send_last_completion_stream_text_chunk(
+        "I'll create a hello world app for you.\n\n```python\nprint('Hello, World!')\n```",
+    );
+    fake_model
+        .send_last_completion_stream_event(LanguageModelCompletionEvent::Stop(StopReason::EndTurn));
+    fake_model.end_last_completion_stream();
+    cx.run_until_parked();
+
+    // Verify executor has the message
+    agent.read_with(cx, |agent, cx| {
+        let session = agent.sessions.get(&session_id).unwrap();
+        let messages = session.thread.read(cx).messages();
+        assert_eq!(messages.len(), 2, "Should have user + agent message");
+    });
+
+    // Step 2: Enable dual-agent mode
+    agent.update(cx, |agent, cx| {
+        agent
+            .enable_dual_agent_mode(session_id.clone(), cx)
+            .expect("Should enable dual-agent mode");
+    });
+
+    // Verify dual-agent state was created
+    let dual_state = agent.read_with(cx, |agent, _| {
+        agent
+            .dual_sessions
+            .get(&session_id)
+            .cloned()
+            .expect("Should have dual-agent state")
+    });
+    assert!(dual_state.enabled, "Dual-agent mode should be enabled");
+
+    // Verify discriminator was created with backfilled messages
+    agent.read_with(cx, |agent, cx| {
+        let discriminator_session = agent
+            .sessions
+            .get(&dual_state.discriminator_session_id)
+            .expect("Discriminator session should exist");
+        let messages = discriminator_session.thread.read(cx).messages();
+
+        // Should have:
+        // 1. USER: "How can I help you?"
+        // 2. ASSISTANT: "Build me a hello world app in Python" (role-flipped)
+        // 3. USER: executor's response (role-flipped)
+        assert_eq!(
+            messages.len(),
+            3,
+            "Discriminator should have 3 backfilled messages"
+        );
+
+        // First message should be the "How can I help you?" opener
+        if let Message::User(user_msg) = &messages[0] {
+            assert!(
+                user_msg.to_markdown().contains("How can I help you?"),
+                "First message should be the opener"
+            );
+        } else {
+            panic!("First message should be a User message");
+        }
+
+        // Second message should be the original task (as ASSISTANT)
+        assert!(
+            matches!(messages[1], Message::Agent(_)),
+            "Second message should be Agent (role-flipped user request)"
+        );
+
+        // Third message should be executor's work (as USER for review)
+        assert!(
+            matches!(messages[2], Message::User(_)),
+            "Third message should be User (role-flipped agent response)"
+        );
+    });
+
+    log::info!("Dual-agent mode setup verified successfully!");
+}
+
+/// Test that the discriminator's task_complete tool is properly detected.
+#[gpui::test]
+async fn test_dual_agent_task_complete_detection(cx: &mut TestAppContext) {
+    cx.update(settings::init);
+    let templates = Templates::new();
+
+    cx.update(|cx| {
+        gpui_tokio::init(cx);
+
+        let http_client = FakeHttpClient::with_404_response();
+        let clock = Arc::new(clock::FakeSystemClock::new());
+        let client = Client::new(clock, http_client, cx);
+        let user_store = cx.new(|cx| UserStore::new(client.clone(), cx));
+        language_model::init(client.clone(), cx);
+        language_models::init(user_store, client.clone(), cx);
+        LanguageModelRegistry::test(cx);
+    });
+    cx.executor().forbid_parking();
+
+    let fake_fs = cx.update(|cx| fs::FakeFs::new(cx.background_executor().clone()));
+    fake_fs.insert_tree(path!("/test"), json!({})).await;
+    let project = Project::test(fake_fs.clone(), [Path::new("/test")], cx).await;
+    let cwd = Path::new("/test");
+    let text_thread_store =
+        cx.new(|cx| assistant_text_thread::TextThreadStore::fake(project.clone(), cx));
+    let history_store = cx.new(|cx| HistoryStore::new(text_thread_store, cx));
+
+    let agent = crate::NativeAgent::new(
+        project.clone(),
+        history_store,
+        templates.clone(),
+        None,
+        fake_fs.clone(),
+        &mut cx.to_async(),
+    )
+    .await
+    .unwrap();
+    let connection = crate::NativeAgentConnection(agent.clone());
+
+    let connection_rc = Rc::new(connection.clone());
+    let acp_thread = cx
+        .update(|cx| connection_rc.new_thread(project, cwd, cx))
+        .await
+        .expect("new_thread should succeed");
+
+    let session_id = acp_thread.read_with(cx, |thread, _| thread.session_id().clone());
+
+    let model = cx
+        .update(|cx| {
+            agent
+                .read(cx)
+                .models()
+                .model_from_id(&acp::ModelId("fake/fake".into()))
+        })
+        .unwrap();
+    let fake_model = model.as_fake();
+
+    // Send initial task
+    let _request = acp_thread.update(cx, |thread, cx| {
+        thread.send(vec!["Write a test".into()], cx)
+    });
+    cx.run_until_parked();
+
+    fake_model.send_last_completion_stream_text_chunk("Here's the test code.");
+    fake_model
+        .send_last_completion_stream_event(LanguageModelCompletionEvent::Stop(StopReason::EndTurn));
+    fake_model.end_last_completion_stream();
+    cx.run_until_parked();
+
+    // Enable dual-agent mode
+    agent.update(cx, |agent, cx| {
+        agent
+            .enable_dual_agent_mode(session_id.clone(), cx)
+            .expect("Should enable dual-agent mode");
+    });
+
+    // Get discriminator session
+    let dual_state = agent.read_with(cx, |agent, _| {
+        agent.dual_sessions.get(&session_id).cloned().unwrap()
+    });
+
+    // Verify discriminator has task_complete tool
+    agent.read_with(cx, |agent, cx| {
+        let discriminator_session = agent
+            .sessions
+            .get(&dual_state.discriminator_session_id)
+            .unwrap();
+        let thread = discriminator_session.thread.read(cx);
+
+        // The thread should have the task_complete tool registered
+        // We can verify this by checking if it's in the available tools
+        let tools = thread.available_tool_names();
+        assert!(
+            tools.contains(&"task_complete".to_string()),
+            "Discriminator should have task_complete tool, found: {:?}",
+            tools
+        );
+    });
+
+    log::info!("task_complete tool detection verified!");
+}

@@ -1039,6 +1039,11 @@ impl Thread {
         self.tools.remove(name).is_some()
     }
 
+    /// Returns the names of all registered tools.
+    pub fn available_tool_names(&self) -> Vec<String> {
+        self.tools.keys().map(|k| k.to_string()).collect()
+    }
+
     pub fn profile(&self) -> &AgentProfileId {
         &self.profile_id
     }
