@@ -105,27 +105,6 @@ pub async fn initialize(cx: &mut AsyncApp) -> Result<CrowContext> {
             .collect();
         log::info!("OpenAI-compatible providers from settings: {:?}", openai_compatible_keys);
 
-        // Set up default model from agent settings (this is normally done by agent_ui)
-        let default_model_selection = {
-            let agent_settings = AgentSettings::get_global(cx);
-            agent_settings.default_model.as_ref().map(|dm| {
-                (
-                    language_model::SelectedModel {
-                        provider: language_model::LanguageModelProviderId::from(dm.provider.0.clone()),
-                        model: language_model::LanguageModelId::from(dm.model.clone()),
-                    },
-                    dm.provider.0.clone(),
-                    dm.model.clone(),
-                )
-            })
-        };
-        if let Some((selected, provider, model)) = default_model_selection {
-            LanguageModelRegistry::global(cx).update(cx, |registry, cx| {
-                registry.select_default_model(Some(&selected), cx);
-            });
-            log::info!("Set default model to {}/{}", provider, model);
-        }
-
         // Trigger authentication for all providers (reads env vars, keychains, etc.)
         let all_providers: Vec<_> = LanguageModelRegistry::global(cx)
             .read(cx)
@@ -161,6 +140,40 @@ pub async fn initialize(cx: &mut AsyncApp) -> Result<CrowContext> {
             }
         }
     }
+
+    // Set up default model from agent settings AFTER authentication completes
+    // This is normally done by agent_ui::init_language_model_settings()
+    cx.update(|cx| {
+        let default_model_selection = {
+            let agent_settings = AgentSettings::get_global(cx);
+            agent_settings.default_model.as_ref().map(|dm| {
+                (
+                    language_model::SelectedModel {
+                        provider: language_model::LanguageModelProviderId::from(dm.provider.0.clone()),
+                        model: language_model::LanguageModelId::from(dm.model.clone()),
+                    },
+                    dm.provider.0.clone(),
+                    dm.model.clone(),
+                )
+            })
+        };
+        if let Some((selected, provider, model)) = default_model_selection {
+            LanguageModelRegistry::global(cx).update(cx, |registry, cx| {
+                registry.select_default_model(Some(&selected), cx);
+            });
+            log::info!("Set default model to {}/{}", provider, model);
+        } else {
+            log::warn!("No default model configured in agent settings");
+        }
+
+        // Debug: list available models after auth
+        let available_models: Vec<_> = LanguageModelRegistry::global(cx)
+            .read(cx)
+            .available_models(cx)
+            .map(|m| format!("{}/{}", m.provider_id().0, m.id().0))
+            .collect();
+        log::info!("Available models after auth: {:?}", available_models);
+    })?;
 
     // Create the project pointing at cwd
     let project = cx.update(|cx| {
