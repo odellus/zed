@@ -7,6 +7,18 @@
 //! Both stream their events to the same AcpThread for unified UI display.
 
 use crate::{NativeAgentConnection, Thread, ThreadEvent, UserMessageContent};
+
+/// Strip markdown role headers like "## User\n\n" or "## Assistant\n\n" from content.
+/// Used when role-flipping messages for the discriminator to avoid confusion.
+pub fn strip_role_header(markdown: &str) -> String {
+    if let Some(rest) = markdown.strip_prefix("## User\n\n") {
+        rest.to_string()
+    } else if let Some(rest) = markdown.strip_prefix("## Assistant\n\n") {
+        rest.to_string()
+    } else {
+        markdown.to_string()
+    }
+}
 use acp_thread::{AcpThread, UserMessageId};
 use agent_client_protocol as acp;
 use anyhow::{Result, anyhow};

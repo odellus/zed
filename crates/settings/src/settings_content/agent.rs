@@ -178,8 +178,35 @@ pub struct AgentProfileContent {
     pub context_servers: IndexMap<Arc<str>, ContextServerPresetContent>,
     /// The default language model selected when using this profile.
     pub default_model: Option<LanguageModelSelection>,
-    /// Custom system prompt for this agent profile. If set, replaces the default system prompt.
-    pub system_prompt: Option<Arc<str>>,
+    /// Which prompt template to use for this profile. Defaults to "default" (system_prompt.hbs).
+    pub prompt_template: Option<PromptTemplate>,
+}
+
+/// Selects which system prompt template (.hbs file) to use for an agent profile.
+#[derive(Debug, PartialEq, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptTemplate {
+    /// Use system_prompt.hbs (the standard agent prompt)
+    #[default]
+    Default,
+    /// Use discriminator_prompt.hbs (for the dual-agent discriminator)
+    Discriminator,
+}
+
+impl PromptTemplate {
+    /// Returns the .hbs template filename for this prompt template.
+    pub fn template_name(&self) -> &'static str {
+        match self {
+            PromptTemplate::Default => "system_prompt.hbs",
+            PromptTemplate::Discriminator => "discriminator_prompt.hbs",
+        }
+    }
+}
+
+impl crate::merge_from::MergeFrom for PromptTemplate {
+    fn merge_from(&mut self, other: &Self) {
+        *self = *other;
+    }
 }
 
 #[skip_serializing_none]

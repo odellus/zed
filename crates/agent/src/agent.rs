@@ -38,6 +38,7 @@ use prompt_store::{
     ProjectContext, PromptStore, RulesFileContext, UserRulesContext, WorktreeContext,
 };
 use serde::{Deserialize, Serialize};
+use agent_settings::{AgentProfileId, builtin_profiles};
 use settings::{LanguageModelSelection, update_settings_file};
 use std::any::Any;
 use std::collections::HashMap;
@@ -438,6 +439,11 @@ impl NativeAgent {
                 cx,
             );
 
+            // Set the discriminator profile (uses discriminator_prompt.hbs and has task_complete enabled)
+            let discriminator_profile_id =
+                AgentProfileId(builtin_profiles::DISCRIMINATOR.into());
+            thread.set_profile(discriminator_profile_id, cx);
+
             // Add the task_complete tool to discriminator
             thread.add_tool(crate::tools::TaskCompleteTool);
 
@@ -456,14 +462,14 @@ impl NativeAgent {
                 match message {
                     Message::User(user_msg) => {
                         // User's request/feedback → discriminator "asked for" this (ASSISTANT)
-                        // Render to markdown since we can't preserve tool calls in assistant msgs
-                        let markdown = user_msg.to_markdown();
+                        // Strip "## User\n\n" header to avoid role confusion
+                        let markdown = crate::dual::strip_role_header(&user_msg.to_markdown());
                         thread.push_agent_message(vec![AgentMessageContent::Text(markdown)]);
                     }
                     Message::Agent(agent_msg) => {
                         // Executor's work → discriminator reviews this (USER)
-                        // Render to markdown since agent messages have tool calls etc.
-                        let markdown = agent_msg.to_markdown();
+                        // Strip "## Assistant\n\n" header to avoid role confusion
+                        let markdown = crate::dual::strip_role_header(&agent_msg.to_markdown());
                         thread.push_user_message(vec![UserMessageContent::Text(markdown)]);
                     }
                     Message::Resume => {
@@ -1056,6 +1062,34 @@ impl NativeAgentConnection {
                 meta: None,
             })
         })
+    }
+
+    /// Check if dual-agent mode is enabled for a session.
+    pub fn is_dual_agent_mode(&self, session_id: &acp::SessionId, cx: &App) -> bool {
+        self.0.read(cx).is_dual_agent_mode(session_id)
+    }
+
+    /// Enable dual-agent mode for a session.
+    pub fn enable_dual_agent_mode(&self, session_id: acp::SessionId, cx: &mut App) -> Result<()> {
+        self.0
+            .update(cx, |agent, cx| agent.enable_dual_agent_mode(session_id, cx))
+    }
+
+    /// Disable dual-agent mode for a session.
+    pub fn disable_dual_agent_mode(&self, session_id: &acp::SessionId, cx: &mut App) -> Result<()> {
+        self.0
+            .update(cx, |agent, _cx| agent.disable_dual_agent_mode(session_id))
+    }
+
+    /// Toggle dual-agent mode for a session.
+    pub fn toggle_dual_agent_mode(&self, session_id: acp::SessionId, cx: &mut App) -> Result<bool> {
+        if self.is_dual_agent_mode(&session_id, cx) {
+            self.disable_dual_agent_mode(&session_id, cx)?;
+            Ok(false)
+        } else {
+            self.enable_dual_agent_mode(session_id, cx)?;
+            Ok(true)
+        }
     }
 }
 

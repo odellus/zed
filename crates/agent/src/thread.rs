@@ -2,7 +2,7 @@ use crate::{
     ContextServerRegistry, CopyPathTool, CreateDirectoryTool, DbLanguageModel, DbThread,
     DeletePathTool, DiagnosticsTool, EditFileTool, FetchTool, FindPathTool, GrepTool,
     ListDirectoryTool, MovePathTool, NowTool, OpenTool, ProjectSnapshot, ReadFileTool,
-    SystemPromptTemplate, Template, Templates, TerminalTool, ThinkingTool, WebSearchTool,
+    SystemPromptTemplate, Templates, TerminalTool, ThinkingTool, WebSearchTool,
 };
 use acp_thread::{MentionUri, UserMessageId};
 use action_log::ActionLog;
@@ -1942,8 +1942,7 @@ impl Thread {
             .tools
             .iter()
             .filter_map(|(tool_name, tool)| {
-                if tool.supports_provider(&model.provider_id())
-                    && profile.is_tool_enabled(tool_name)
+                if tool.supports_provider(&model.provider_id()) && profile.is_tool_enabled(tool_name)
                 {
                     Some((truncate(tool_name), tool.clone()))
                 } else {
@@ -2004,24 +2003,21 @@ impl Thread {
             self.messages.len()
         );
 
-        // Check if the profile has a custom system prompt
-        let custom_prompt = AgentSettings::get_global(cx)
+        // Get the prompt template from the profile (defaults to Default/system_prompt.hbs)
+        let prompt_template = AgentSettings::get_global(cx)
             .profiles
             .get(&self.profile_id)
-            .and_then(|profile| profile.system_prompt.clone());
+            .map(|profile| profile.prompt_template)
+            .unwrap_or_default();
 
-        let system_prompt = if let Some(custom) = custom_prompt {
-            custom.to_string()
-        } else {
-            SystemPromptTemplate {
-                project: self.project_context.read(cx),
-                available_tools,
-                model_name: self.model.as_ref().map(|m| m.name().0.to_string()),
-            }
-            .render(&self.templates)
-            .context("failed to build system prompt")
-            .expect("Invalid template")
-        };
+        let system_prompt = SystemPromptTemplate {
+            project: self.project_context.read(cx),
+            available_tools,
+            model_name: self.model.as_ref().map(|m| m.name().0.to_string()),
+        }
+        .render_with_template(&self.templates, prompt_template)
+        .context("failed to build system prompt")
+        .expect("Invalid template");
         let mut messages = vec![LanguageModelRequestMessage {
             role: Role::System,
             content: vec![system_prompt.into()],

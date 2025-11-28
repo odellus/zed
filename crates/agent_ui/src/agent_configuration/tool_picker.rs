@@ -315,6 +315,7 @@ impl PickerDelegate for ToolPickerDelegate {
                             })
                             .collect(),
                         default_model: default_profile.default_model.clone(),
+                        prompt_template: Some(default_profile.prompt_template),
                     });
 
                 if let Some(server_id) = server_id {

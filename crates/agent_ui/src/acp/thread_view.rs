@@ -70,7 +70,7 @@ use crate::ui::{
 use crate::{
     AgentDiffPane, AgentPanel, AllowAlways, AllowOnce, ContinueThread, ContinueWithBurnMode,
     CycleModeSelector, ExpandMessageEditor, Follow, KeepAll, OpenAgentDiff, OpenHistory, RejectAll,
-    RejectOnce, ToggleBurnMode, ToggleProfileSelector,
+    RejectOnce, ToggleBurnMode, ToggleDualAgentMode, ToggleProfileSelector,
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -4195,7 +4195,8 @@ impl AcpThreadView {
                             .gap_0p5()
                             .child(self.render_add_context_button(cx))
                             .child(self.render_follow_toggle(cx))
-                            .children(self.render_burn_mode_toggle(cx)),
+                            .children(self.render_burn_mode_toggle(cx))
+                            .children(self.render_dual_agent_mode_toggle(cx)),
                     )
                     .child(
                         h_flex()
@@ -4386,6 +4387,63 @@ impl AcpThreadView {
                     cx.new(|_| BurnModeTooltip::new().selected(burn_mode_enabled))
                         .into()
                 })
+                .into_any_element(),
+        )
+    }
+
+    fn toggle_dual_agent_mode(
+        &mut self,
+        _: &ToggleDualAgentMode,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(connection) = self.as_native_connection(cx) else {
+            return;
+        };
+        let Some(session_id) = self.thread().map(|t| t.read(cx).session_id().clone()) else {
+            return;
+        };
+
+        match connection.toggle_dual_agent_mode(session_id, cx) {
+            Ok(enabled) => {
+                log::info!("Dual-agent mode toggled: {}", enabled);
+                cx.notify();
+            }
+            Err(err) => {
+                log::error!("Failed to toggle dual-agent mode: {:?}", err);
+            }
+        }
+    }
+
+    fn render_dual_agent_mode_toggle(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let connection = self.as_native_connection(cx)?;
+        let session_id = self.thread()?.read(cx).session_id().clone();
+
+        let dual_mode_enabled = connection.is_dual_agent_mode(&session_id, cx);
+
+        let icon = if dual_mode_enabled {
+            IconName::UserGroup
+        } else {
+            IconName::UserGroup
+        };
+
+        Some(
+            IconButton::new("dual-agent-mode", icon)
+                .icon_size(IconSize::Small)
+                .icon_color(if dual_mode_enabled {
+                    Color::Accent
+                } else {
+                    Color::Muted
+                })
+                .toggle_state(dual_mode_enabled)
+                .on_click(cx.listener(|this, _event, window, cx| {
+                    this.toggle_dual_agent_mode(&ToggleDualAgentMode, window, cx);
+                }))
+                .tooltip(Tooltip::text(if dual_mode_enabled {
+                    "Disable dual-agent mode (executor + reviewer)"
+                } else {
+                    "Enable dual-agent mode (executor + reviewer)"
+                }))
                 .into_any_element(),
         )
     }
@@ -5781,6 +5839,7 @@ impl Render for AcpThreadView {
             .size_full()
             .key_context("AcpThread")
             .on_action(cx.listener(Self::toggle_burn_mode))
+            .on_action(cx.listener(Self::toggle_dual_agent_mode))
             .on_action(cx.listener(Self::keep_all))
             .on_action(cx.listener(Self::reject_all))
             .on_action(cx.listener(Self::allow_always))

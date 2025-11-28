@@ -965,6 +965,19 @@
         "name": "Minimal",
         "enable_all_context_servers": false,
         "tools": {}
+      },
+      "discriminator": {
+        "name": "Discriminator",
+        "prompt_template": "discriminator",
+        "enable_all_context_servers": false,
+        "tools": {
+          "task_complete": true,
+          "read_file": true,
+          "list_directory": true,
+          "find_path": true,
+          "grep": true,
+          "thinking": true
+        }
       }
     },
     // Where to show notifications when the agent has either completed

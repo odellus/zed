@@ -3,6 +3,7 @@ use gpui::SharedString;
 use handlebars::Handlebars;
 use rust_embed::RustEmbed;
 use serde::Serialize;
+use settings::PromptTemplate;
 use std::sync::Arc;
 
 #[derive(RustEmbed)]
@@ -39,6 +40,18 @@ pub struct SystemPromptTemplate<'a> {
     pub project: &'a prompt_store::ProjectContext,
     pub available_tools: Vec<SharedString>,
     pub model_name: Option<String>,
+}
+
+impl SystemPromptTemplate<'_> {
+    /// Render using a specific prompt template variant.
+    pub fn render_with_template(
+        &self,
+        templates: &Templates,
+        prompt_template: PromptTemplate,
+    ) -> Result<String> {
+        let template_name = prompt_template.template_name();
+        Ok(templates.0.render(template_name, self)?)
+    }
 }
 
 impl Template for SystemPromptTemplate<'_> {

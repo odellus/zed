@@ -6,8 +6,8 @@ use convert_case::{Case, Casing as _};
 use fs::Fs;
 use gpui::{App, SharedString};
 use settings::{
-    AgentProfileContent, ContextServerPresetContent, LanguageModelSelection, Settings as _,
-    SettingsContent, update_settings_file,
+    AgentProfileContent, ContextServerPresetContent, LanguageModelSelection, PromptTemplate,
+    Settings as _, SettingsContent, update_settings_file,
 };
 use util::ResultExt as _;
 
@@ -19,9 +19,13 @@ pub mod builtin_profiles {
     pub const WRITE: &str = "write";
     pub const ASK: &str = "ask";
     pub const MINIMAL: &str = "minimal";
+    pub const DISCRIMINATOR: &str = "discriminator";
 
     pub fn is_builtin(profile_id: &AgentProfileId) -> bool {
-        profile_id.as_str() == WRITE || profile_id.as_str() == ASK || profile_id.as_str() == MINIMAL
+        profile_id.as_str() == WRITE
+            || profile_id.as_str() == ASK
+            || profile_id.as_str() == MINIMAL
+            || profile_id.as_str() == DISCRIMINATOR
     }
 }
 
@@ -70,10 +74,11 @@ impl AgentProfile {
         let default_model = base_profile
             .as_ref()
             .and_then(|profile| profile.default_model.clone());
-        // Preserve the base profile's system prompt when cloning into a new profile.
-        let system_prompt = base_profile
+        // Preserve the base profile's prompt template when cloning into a new profile.
+        let prompt_template = base_profile
             .as_ref()
-            .and_then(|profile| profile.system_prompt.clone());
+            .map(|profile| profile.prompt_template)
+            .unwrap_or_default();
 
         let profile_settings = AgentProfileSettings {
             name: name.into(),
@@ -81,7 +86,7 @@ impl AgentProfile {
             enable_all_context_servers,
             context_servers,
             default_model,
-            system_prompt,
+            prompt_template,
         };
 
         update_settings_file(fs, cx, {
@@ -114,8 +119,8 @@ pub struct AgentProfileSettings {
     pub context_servers: IndexMap<Arc<str>, ContextServerPreset>,
     /// Default language model to apply when this profile becomes active.
     pub default_model: Option<LanguageModelSelection>,
-    /// Custom system prompt for this agent profile. If set, replaces the default system prompt.
-    pub system_prompt: Option<Arc<str>>,
+    /// Which prompt template (.hbs file) to use for this profile.
+    pub prompt_template: PromptTemplate,
 }
 
 impl AgentProfileSettings {
@@ -165,7 +170,7 @@ impl AgentProfileSettings {
                     })
                     .collect(),
                 default_model: self.default_model.clone(),
-                system_prompt: self.system_prompt.clone(),
+                prompt_template: Some(self.prompt_template),
             },
         );
 
@@ -181,7 +186,7 @@ impl From<AgentProfileContent> for AgentProfileSettings {
             enable_all_context_servers,
             context_servers,
             default_model,
-            system_prompt,
+            prompt_template,
         } = content;
 
         Self {
@@ -193,7 +198,7 @@ impl From<AgentProfileContent> for AgentProfileSettings {
                 .map(|(server_id, preset)| (server_id, preset.into()))
                 .collect(),
             default_model,
-            system_prompt,
+            prompt_template: prompt_template.unwrap_or_default(),
         }
     }
 }
