@@ -407,23 +407,13 @@ impl NativeAgent {
         executor_session_id: acp::SessionId,
         cx: &mut Context<Self>,
     ) -> Result<()> {
-        // Verify executor session exists and has at least one user message
+        // Verify executor session exists
         let executor_session = self
             .sessions
             .get(&executor_session_id)
             .ok_or_else(|| anyhow!("Executor session not found: {}", executor_session_id))?;
 
         let executor_messages = executor_session.thread.read(cx).messages().to_vec();
-
-        // Must have at least one user message (the task) before enabling dual-agent
-        let has_user_message = executor_messages
-            .iter()
-            .any(|m| matches!(m, Message::User(_)));
-        if !has_user_message {
-            return Err(anyhow!(
-                "Cannot enable dual-agent mode: executor has no user messages (no task to review)"
-            ));
-        }
 
         let acp_thread = executor_session.acp_thread.clone();
         let model = executor_session.thread.read(cx).model().cloned();

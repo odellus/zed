@@ -315,6 +315,56 @@ impl ThreadsDatabase {
         "})?()
         .map_err(|e| anyhow!("Failed to create session_pairs table: {}", e))?;
 
+        // Prompts table - version control for prompt templates
+        // Each unique (name, template_hash) pair is a distinct version
+        connection.exec(indoc! {"
+            CREATE TABLE IF NOT EXISTS prompts (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                template_hash TEXT NOT NULL,
+                template_content TEXT NOT NULL,
+                input_schema TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(name, template_hash)
+            )
+        "})?()
+        .map_err(|e| anyhow!("Failed to create prompts table: {}", e))?;
+
+        // Index for looking up prompts by name (to find all versions)
+        connection.exec(indoc! {"
+            CREATE INDEX IF NOT EXISTS idx_prompts_name ON prompts(name)
+        "})?()
+        .map_err(|e| anyhow!("Failed to create prompts name index: {}", e))?;
+
+        // Traces table - full telemetry for every LLM call
+        // We store most data as a JSON blob for flexibility and to avoid tuple size limits
+        connection.exec(indoc! {"
+            CREATE TABLE IF NOT EXISTS traces (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                agent_role TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                data TEXT NOT NULL
+            )
+        "})?()
+        .map_err(|e| anyhow!("Failed to create traces table: {}", e))?;
+
+        // Indexes for common trace queries
+        connection.exec(indoc! {"
+            CREATE INDEX IF NOT EXISTS idx_traces_session ON traces(session_id)
+        "})?()
+        .map_err(|e| anyhow!("Failed to create traces session index: {}", e))?;
+
+        connection.exec(indoc! {"
+            CREATE INDEX IF NOT EXISTS idx_traces_agent_role ON traces(agent_role)
+        "})?()
+        .map_err(|e| anyhow!("Failed to create traces agent_role index: {}", e))?;
+
+        connection.exec(indoc! {"
+            CREATE INDEX IF NOT EXISTS idx_traces_started_at ON traces(started_at)
+        "})?()
+        .map_err(|e| anyhow!("Failed to create traces started_at index: {}", e))?;
+
         let db = Self {
             executor,
             connection: Arc::new(Mutex::new(connection)),
@@ -520,6 +570,245 @@ impl ThreadsDatabase {
             Ok(pairs)
         })
     }
+
+    // ==================== Prompt Management ====================
+
+    /// Register a prompt template, returning its ID.
+    /// If this exact (name, hash) combo exists, returns existing ID.
+    /// If it's a new version, inserts and returns new ID.
+    pub fn register_prompt(
+        &self,
+        name: String,
+        template_content: String,
+        input_schema: Option<String>,
+    ) -> Task<Result<String>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            // Hash the template content
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut hasher = DefaultHasher::new();
+            template_content.hash(&mut hasher);
+            let template_hash = format!("{:016x}", hasher.finish());
+
+            // Check if this version already exists
+            let mut select = connection.select_bound::<(String, String), String>(indoc! {"
+                SELECT id FROM prompts WHERE name = ? AND template_hash = ? LIMIT 1
+            "})?;
+
+            if let Some(existing_id) = select((name.clone(), template_hash.clone()))?.into_iter().next() {
+                return Ok(existing_id);
+            }
+
+            // Insert new version
+            let id = uuid::Uuid::new_v4().to_string();
+            let created_at = Utc::now().to_rfc3339();
+
+            let mut insert = connection.exec_bound::<(String, String, String, String, Option<String>, String)>(indoc! {"
+                INSERT INTO prompts (id, name, template_hash, template_content, input_schema, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            "})?;
+
+            insert((id.clone(), name, template_hash, template_content, input_schema, created_at))?;
+
+            Ok(id)
+        })
+    }
+
+    /// Get a prompt by ID
+    pub fn get_prompt(&self, id: String) -> Task<Result<Option<Prompt>>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            let mut select = connection.select_bound::<String, (String, String, String, String, Option<String>, String)>(indoc! {"
+                SELECT id, name, template_hash, template_content, input_schema, created_at
+                FROM prompts WHERE id = ? LIMIT 1
+            "})?;
+
+            let row = select(id)?.into_iter().next();
+
+            match row {
+                Some((id, name, template_hash, template_content, input_schema, created_at)) => {
+                    Ok(Some(Prompt {
+                        id,
+                        name,
+                        template_hash,
+                        template_content,
+                        input_schema,
+                        created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+                    }))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// List all prompts (all versions)
+    pub fn list_prompts(&self) -> Task<Result<Vec<Prompt>>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            let mut select = connection.select_bound::<(), (String, String, String, String, Option<String>, String)>(indoc! {"
+                SELECT id, name, template_hash, template_content, input_schema, created_at
+                FROM prompts ORDER BY name, created_at DESC
+            "})?;
+
+            let rows = select(())?;
+            let mut prompts = Vec::new();
+
+            for (id, name, template_hash, template_content, input_schema, created_at) in rows {
+                prompts.push(Prompt {
+                    id,
+                    name,
+                    template_hash,
+                    template_content,
+                    input_schema,
+                    created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+                });
+            }
+
+            Ok(prompts)
+        })
+    }
+
+    /// List all versions of a specific prompt by name
+    pub fn list_prompt_versions(&self, name: String) -> Task<Result<Vec<Prompt>>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            let mut select = connection.select_bound::<String, (String, String, String, String, Option<String>, String)>(indoc! {"
+                SELECT id, name, template_hash, template_content, input_schema, created_at
+                FROM prompts WHERE name = ? ORDER BY created_at DESC
+            "})?;
+
+            let rows = select(name)?;
+            let mut prompts = Vec::new();
+
+            for (id, name, template_hash, template_content, input_schema, created_at) in rows {
+                prompts.push(Prompt {
+                    id,
+                    name,
+                    template_hash,
+                    template_content,
+                    input_schema,
+                    created_at: DateTime::parse_from_rfc3339(&created_at)?.with_timezone(&Utc),
+                });
+            }
+
+            Ok(prompts)
+        })
+    }
+
+    // ==================== Trace Management ====================
+
+    /// Save a completed trace
+    pub fn save_trace(&self, trace: Trace) -> Task<Result<()>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            let data = serde_json::to_string(&trace)?;
+
+            let mut insert = connection.exec_bound::<(String, String, String, String, String)>(indoc! {"
+                INSERT INTO traces (id, session_id, agent_role, started_at, data)
+                VALUES (?, ?, ?, ?, ?)
+            "})?;
+
+            insert((
+                trace.id,
+                trace.session_id,
+                trace.agent_role.as_str().to_string(),
+                trace.started_at.to_rfc3339(),
+                data,
+            ))?;
+
+            Ok(())
+        })
+    }
+
+    /// Get a trace by ID
+    pub fn get_trace(&self, id: String) -> Task<Result<Option<Trace>>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            let mut select = connection.select_bound::<String, String>(indoc! {"
+                SELECT data FROM traces WHERE id = ? LIMIT 1
+            "})?;
+
+            let row = select(id)?.into_iter().next();
+
+            match row {
+                Some(data) => {
+                    let trace: Trace = serde_json::from_str(&data)?;
+                    Ok(Some(trace))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// List traces for a session
+    pub fn list_traces_for_session(&self, session_id: String) -> Task<Result<Vec<Trace>>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            let mut select = connection.select_bound::<String, String>(indoc! {"
+                SELECT data FROM traces WHERE session_id = ? ORDER BY started_at ASC
+            "})?;
+
+            let rows = select(session_id)?;
+            let mut traces = Vec::new();
+
+            for data in rows {
+                if let Ok(trace) = serde_json::from_str::<Trace>(&data) {
+                    traces.push(trace);
+                }
+            }
+
+            Ok(traces)
+        })
+    }
+
+    /// List recent traces (across all sessions)
+    pub fn list_recent_traces(&self, limit: usize) -> Task<Result<Vec<Trace>>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            let query = format!(
+                "SELECT data FROM traces ORDER BY started_at DESC LIMIT {}",
+                limit
+            );
+
+            let mut select = connection.select_bound::<(), String>(&query)?;
+
+            let rows = select(())?;
+            let mut traces = Vec::new();
+
+            for data in rows {
+                if let Ok(trace) = serde_json::from_str::<Trace>(&data) {
+                    traces.push(trace);
+                }
+            }
+
+            Ok(traces)
+        })
+    }
 }
 
 /// Represents a paired executor/discriminator session for dual-agent mode
@@ -528,4 +817,192 @@ pub struct SessionPair {
     pub executor_session_id: acp::SessionId,
     pub discriminator_session_id: acp::SessionId,
     pub created_at: DateTime<Utc>,
+}
+
+/// Represents a versioned prompt template
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Prompt {
+    pub id: String,
+    pub name: String,
+    pub template_hash: String,
+    pub template_content: String,
+    pub input_schema: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Role of the agent making an LLM call
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentRole {
+    Executor,
+    Discriminator,
+    EditAgent,
+    DiffJudge,
+}
+
+impl AgentRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentRole::Executor => "executor",
+            AgentRole::Discriminator => "discriminator",
+            AgentRole::EditAgent => "edit_agent",
+            AgentRole::DiffJudge => "diff_judge",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "executor" => Some(AgentRole::Executor),
+            "discriminator" => Some(AgentRole::Discriminator),
+            "edit_agent" => Some(AgentRole::EditAgent),
+            "diff_judge" => Some(AgentRole::DiffJudge),
+            _ => None,
+        }
+    }
+}
+
+/// Full telemetry record for an LLM call
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Trace {
+    pub id: String,
+    pub session_id: String,
+    pub thread_id: Option<String>,
+    pub prompt_id: Option<String>,
+    pub agent_role: AgentRole,
+    pub model_provider: String,
+    pub model_id: String,
+    pub template_inputs: Option<String>,
+    pub rendered_prompt: Option<String>,
+    pub request_messages: String,
+    pub request_tools: Option<String>,
+    pub response_content: Option<String>,
+    pub response_tool_calls: Option<String>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub latency_ms: Option<i64>,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub error: Option<String>,
+}
+
+/// Builder for creating a trace - start before the LLM call, complete after
+#[derive(Debug, Clone)]
+pub struct TraceBuilder {
+    pub id: String,
+    pub session_id: String,
+    pub thread_id: Option<String>,
+    pub prompt_id: Option<String>,
+    pub agent_role: AgentRole,
+    pub model_provider: String,
+    pub model_id: String,
+    pub template_inputs: Option<String>,
+    pub rendered_prompt: Option<String>,
+    pub request_messages: String,
+    pub request_tools: Option<String>,
+    pub started_at: DateTime<Utc>,
+}
+
+impl TraceBuilder {
+    pub fn new(
+        session_id: String,
+        agent_role: AgentRole,
+        model_provider: String,
+        model_id: String,
+        request_messages: String,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id,
+            thread_id: None,
+            prompt_id: None,
+            agent_role,
+            model_provider,
+            model_id,
+            template_inputs: None,
+            rendered_prompt: None,
+            request_messages,
+            request_tools: None,
+            started_at: Utc::now(),
+        }
+    }
+
+    pub fn with_thread_id(mut self, thread_id: String) -> Self {
+        self.thread_id = Some(thread_id);
+        self
+    }
+
+    pub fn with_prompt(mut self, prompt_id: String, template_inputs: String, rendered: String) -> Self {
+        self.prompt_id = Some(prompt_id);
+        self.template_inputs = Some(template_inputs);
+        self.rendered_prompt = Some(rendered);
+        self
+    }
+
+    pub fn with_tools(mut self, tools: String) -> Self {
+        self.request_tools = Some(tools);
+        self
+    }
+
+    pub fn complete(
+        self,
+        response_content: Option<String>,
+        response_tool_calls: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+    ) -> Trace {
+        let completed_at = Utc::now();
+        let latency_ms = (completed_at - self.started_at).num_milliseconds();
+
+        Trace {
+            id: self.id,
+            session_id: self.session_id,
+            thread_id: self.thread_id,
+            prompt_id: self.prompt_id,
+            agent_role: self.agent_role,
+            model_provider: self.model_provider,
+            model_id: self.model_id,
+            template_inputs: self.template_inputs,
+            rendered_prompt: self.rendered_prompt,
+            request_messages: self.request_messages,
+            request_tools: self.request_tools,
+            response_content,
+            response_tool_calls,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            latency_ms: Some(latency_ms),
+            started_at: self.started_at,
+            completed_at: Some(completed_at),
+            error: None,
+        }
+    }
+
+    pub fn fail(self, error: String) -> Trace {
+        let completed_at = Utc::now();
+        let latency_ms = (completed_at - self.started_at).num_milliseconds();
+
+        Trace {
+            id: self.id,
+            session_id: self.session_id,
+            thread_id: self.thread_id,
+            prompt_id: self.prompt_id,
+            agent_role: self.agent_role,
+            model_provider: self.model_provider,
+            model_id: self.model_id,
+            template_inputs: self.template_inputs,
+            rendered_prompt: self.rendered_prompt,
+            request_messages: self.request_messages,
+            request_tools: self.request_tools,
+            response_content: None,
+            response_tool_calls: None,
+            input_tokens: None,
+            output_tokens: None,
+            total_tokens: None,
+            latency_ms: Some(latency_ms),
+            started_at: self.started_at,
+            completed_at: Some(completed_at),
+            error: Some(error),
+        }
+    }
 }

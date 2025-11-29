@@ -210,6 +210,14 @@ pub async fn initialize(cx: &mut AsyncApp) -> Result<CrowContext> {
     // Create templates for system prompts
     let templates = Templates::new();
 
+    // Register prompt templates with database for telemetry
+    let db = cx
+        .update(|cx| agent::ThreadsDatabase::connect(cx))?
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    templates.register_with_database(&db).await
+        .context("Failed to register prompt templates")?;
+
     // Create prompt builder and slash command registry (synchronous operations)
     let (prompt_builder, slash_command_registry, text_thread_store_task) = cx.update(|cx| {
         let stdout_is_a_pty = false;

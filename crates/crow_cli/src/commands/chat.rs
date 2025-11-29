@@ -105,7 +105,8 @@ pub async fn run_chat_command(
     }
 
     // If auto mode, enable dual-agent BEFORE sending the message
-    // This ensures the orchestrator handles the full executor↔discriminator loop
+    // This creates the discriminator, backfills history, and ensures
+    // the message goes through the DualAgentOrchestrator
     if auto_mode {
         if output_mode == OutputMode::Verbose {
             eprintln!("{}", "🔄 Enabling auto mode (dual-agent)...".yellow().bold());
@@ -119,14 +120,14 @@ pub async fn run_chat_command(
         if output_mode == OutputMode::Verbose {
             eprintln!(
                 "{}",
-                "✓ Auto mode enabled. Orchestrator will handle executor↔discriminator loop.".green()
+                "✓ Auto mode enabled. Message will go through executor↔discriminator loop.".green()
             );
             eprintln!();
         }
     }
 
     // Send the prompt and wait for completion
-    // In auto mode, this goes through the DualAgentOrchestrator
+    // If auto mode is enabled, this goes through the DualAgentOrchestrator
     let prompt_blocks = vec![acp::ContentBlock::Text(acp::TextContent {
         text: message,
         annotations: None,
@@ -172,8 +173,6 @@ pub async fn run_chat_command(
 
     Ok(())
 }
-
-
 
 /// Render a single thread entry to stdout/stderr
 fn render_entry(
