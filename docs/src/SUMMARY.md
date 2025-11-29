@@ -69,6 +69,7 @@
   - [Billing](./ai/billing.md)
 - [Privacy and Security](./ai/privacy-and-security.md)
   - [AI Improvement](./ai/ai-improvement.md)
+- [Prompt Management & Telemetry](./ai/prompt-telemetry.md)
 
 # Extensions
 
