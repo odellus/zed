@@ -351,3 +351,33 @@ fn run_new_session(title: Option<String>) -> Result<()> {
 
     Ok(())
 }
+
+fn run_telemetry_command(command: TelemetryCommands) -> Result<()> {
+    Application::headless().run(move |cx| {
+        cx.spawn(async move |mut cx| {
+            let result = match command {
+                TelemetryCommands::Prompts { json } => {
+                    commands::telemetry::list_prompts(json, &mut cx).await
+                }
+                TelemetryCommands::Prompt { prompt_id } => {
+                    commands::telemetry::show_prompt(prompt_id, &mut cx).await
+                }
+                TelemetryCommands::Traces { limit, session, json } => {
+                    commands::telemetry::list_traces(limit, session, json, &mut cx).await
+                }
+                TelemetryCommands::Trace { trace_id } => {
+                    commands::telemetry::show_trace(trace_id, &mut cx).await
+                }
+            };
+
+            if let Err(e) = result {
+                eprintln!("Error: {:#}", e);
+            }
+
+            std::process::exit(0);
+        })
+        .detach();
+    });
+
+    Ok(())
+}
