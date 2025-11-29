@@ -71,6 +71,34 @@ enum Commands {
         /// Title for the new session
         title: Option<String>,
     },
+
+    /// Telemetry commands (prompts, traces)
+    Telemetry {
+        #[command(subcommand)]
+        command: TelemetryCommands,
+    },
+
+    /// List recent traces (alias for `telemetry traces`)
+    Traces {
+        /// Maximum number of traces to show
+        #[arg(long, short = 'n', default_value = "20")]
+        limit: usize,
+
+        /// Filter by session ID
+        #[arg(long, short = 's')]
+        session: Option<String>,
+
+        /// Output as JSON
+        #[arg(long, short = 'j')]
+        json: bool,
+    },
+
+    /// List prompts (alias for `telemetry prompts`)
+    Prompts {
+        /// Output as JSON
+        #[arg(long, short = 'j')]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -117,6 +145,43 @@ enum SessionCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum TelemetryCommands {
+    /// List registered prompt templates
+    Prompts {
+        /// Output as JSON
+        #[arg(long, short = 'j')]
+        json: bool,
+    },
+
+    /// Show a specific prompt's content
+    Prompt {
+        /// Prompt ID
+        prompt_id: String,
+    },
+
+    /// List recent LLM call traces
+    Traces {
+        /// Maximum number of traces to show
+        #[arg(long, short = 'n', default_value = "20")]
+        limit: usize,
+
+        /// Filter by session ID
+        #[arg(long, short = 's')]
+        session: Option<String>,
+
+        /// Output as JSON
+        #[arg(long, short = 'j')]
+        json: bool,
+    },
+
+    /// Show a specific trace's full details
+    Trace {
+        /// Trace ID
+        trace_id: String,
+    },
+}
+
 fn main() {
     env_logger::init();
 
@@ -149,6 +214,16 @@ fn main() {
         }),
 
         Some(Commands::New { title }) => run_new_session(title),
+
+        Some(Commands::Telemetry { command }) => run_telemetry_command(command),
+
+        Some(Commands::Traces { limit, session, json }) => {
+            run_telemetry_command(TelemetryCommands::Traces { limit, session, json })
+        }
+
+        Some(Commands::Prompts { json }) => {
+            run_telemetry_command(TelemetryCommands::Prompts { json })
+        }
 
         None => {
             // No subcommand - treat trailing args as chat message

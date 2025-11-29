@@ -1,8 +1,9 @@
 use crate::{
-    ContextServerRegistry, CopyPathTool, CreateDirectoryTool, DbLanguageModel, DbThread,
+    AgentRole, ContextServerRegistry, CopyPathTool, CreateDirectoryTool, DbLanguageModel, DbThread,
     DeletePathTool, DiagnosticsTool, EditFileTool, FetchTool, FindPathTool, GrepTool,
     ListDirectoryTool, MovePathTool, NowTool, OpenTool, ProjectSnapshot, ReadFileTool,
-    SystemPromptTemplate, Templates, TerminalTool, ThinkingTool, WebSearchTool,
+    SystemPromptTemplate, Templates, TerminalTool, ThinkingTool, ThreadsDatabase, TraceBuilder,
+    WebSearchTool,
 };
 use acp_thread::{MentionUri, UserMessageId};
 use action_log::ActionLog;
@@ -1267,15 +1268,88 @@ impl Thread {
 
             log::debug!("Calling model.stream_completion, attempt {}", attempt);
 
+            // === TELEMETRY: Start trace ===
+            let trace_info = this.read_with(cx, |thread, _| {
+                // Get the system prompt (first message)
+                let system_prompt = request.messages.first()
+                    .and_then(|m| m.content.first())
+                    .and_then(|c| match c {
+                        language_model::MessageContent::Text(t) => Some(t.clone()),
+                        _ => None,
+                    });
+
+                // Get prompt_id from templates
+                let prompt_id = thread.templates.get_prompt_id("system_prompt.hbs");
+
+                // Serialize request messages for trace
+                let request_messages = serde_json::to_string(&request.messages).unwrap_or_default();
+                let request_tools = serde_json::to_string(&request.tools).ok();
+
+                (
+                    thread.id.0.to_string(),
+                    prompt_id,
+                    system_prompt,
+                    request_messages,
+                    request_tools,
+                )
+            })?;
+
+            let trace_builder = TraceBuilder::new(
+                trace_info.0.clone(),
+                AgentRole::Executor, // Default to executor - can be enhanced later
+                model.provider_id().to_string(),
+                model.id().0.to_string(),
+                trace_info.3.clone(),
+            )
+            .with_thread_id(trace_info.0.clone());
+
+            let trace_builder = if let Some(prompt_id) = trace_info.1 {
+                trace_builder.with_prompt(
+                    prompt_id,
+                    String::new(), // TODO: template inputs
+                    trace_info.2.unwrap_or_default(),
+                )
+            } else {
+                trace_builder
+            };
+
+            let trace_builder = if let Some(tools) = trace_info.4 {
+                trace_builder.with_tools(tools)
+            } else {
+                trace_builder
+            };
+
             let (mut events, mut error) = match model.stream_completion(request, cx).await {
                 Ok(events) => (events, None),
                 Err(err) => (stream::empty().boxed(), Some(err)),
             };
             let mut tool_results = FuturesUnordered::new();
+            let mut response_text = String::new();
+            let mut tool_calls_json = Vec::new();
+            let mut token_usage: Option<language_model::TokenUsage> = None;
+
             while let Some(event) = events.next().await {
                 log::trace!("Received completion event: {:?}", event);
                 match event {
                     Ok(event) => {
+                        // Capture response content for trace
+                        match &event {
+                            LanguageModelCompletionEvent::Text(text) => {
+                                response_text.push_str(text);
+                            }
+                            LanguageModelCompletionEvent::ToolUse(tool_use) => {
+                                tool_calls_json.push(serde_json::json!({
+                                    "id": tool_use.id.to_string(),
+                                    "name": tool_use.name.to_string(),
+                                    "input": tool_use.raw_input,
+                                }));
+                            }
+                            LanguageModelCompletionEvent::UsageUpdate(usage) => {
+                                token_usage = Some(*usage);
+                            }
+                            _ => {}
+                        }
+
                         tool_results.extend(this.update(cx, |this, cx| {
                             this.handle_completion_event(event, event_stream, cx)
                         })??);
@@ -1286,6 +1360,43 @@ impl Thread {
                     }
                 }
             }
+
+            // === TELEMETRY: Complete and save trace ===
+            let trace = if let Some(ref err) = error {
+                trace_builder.fail(format!("{:?}", err))
+            } else {
+                let tool_calls = if tool_calls_json.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::to_string(&tool_calls_json).unwrap_or_default())
+                };
+
+                let response_content = if response_text.is_empty() {
+                    None
+                } else {
+                    Some(response_text.clone())
+                };
+
+                trace_builder.complete(
+                    response_content,
+                    tool_calls,
+                    token_usage.map(|u| u.input_tokens as i64),
+                    token_usage.map(|u| u.output_tokens as i64),
+                    token_usage.map(|u| (u.input_tokens + u.output_tokens) as i64),
+                )
+            };
+
+            // Save trace asynchronously (don't block on it)
+            let db_future = cx.update(|cx| ThreadsDatabase::connect(cx))?;
+            cx.background_executor()
+                .spawn(async move {
+                    if let Ok(db) = db_future.await {
+                        if let Err(e) = db.save_trace(trace).await {
+                            log::warn!("Failed to save trace: {:?}", e);
+                        }
+                    }
+                })
+                .detach();
 
             let end_turn = tool_results.is_empty();
             while let Some(tool_result) = tool_results.next().await {
