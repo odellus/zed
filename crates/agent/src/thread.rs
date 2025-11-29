@@ -2168,6 +2168,11 @@ impl Thread {
 
     /// Export the last agent turn (since last user message) to markdown.
     /// Used for dual-agent handoff: executor's output becomes discriminator's input.
+    ///
+    /// Role headers (## Assistant, ## User) are stripped because:
+    /// 1. The discriminator receives this as a single USER message (role-flipped)
+    /// 2. Multiple headers confuse the model about who's speaking
+    /// 3. Tool calls are already self-documenting via markdown formatting
     pub fn export_last_turn(&self) -> String {
         let mut output = String::new();
 
@@ -2190,7 +2195,10 @@ impl Thread {
             output.push_str(&pending.to_markdown());
         }
 
+        // Strip role headers - discriminator sees clean content without identity confusion
         output
+            .replace("## Assistant\n\n", "")
+            .replace("## User\n\n", "")
     }
 
     fn advance_prompt_id(&mut self) {

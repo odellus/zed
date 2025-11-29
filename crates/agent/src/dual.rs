@@ -6,7 +6,7 @@
 //!
 //! Both stream their events to the same AcpThread for unified UI display.
 
-use crate::{NativeAgentConnection, Thread, ThreadEvent, UserMessageContent};
+use crate::{AgentMessageContent, NativeAgentConnection, Thread, ThreadEvent, UserMessageContent};
 
 /// Strip markdown role headers like "## User\n\n" or "## Assistant\n\n" from content.
 /// Used when role-flipping messages for the discriminator to avoid confusion.
@@ -111,6 +111,23 @@ impl DualAgentOrchestrator {
         initial_message: Vec<UserMessageContent>,
         cx: &mut AsyncApp,
     ) -> Result<acp::PromptResponse> {
+        // On first call, add the initial request as Agent message in discriminator.
+        // This represents "what the user asked for" before we show executor's output.
+        // Discriminator sees: User("How can I help?") -> Agent(<initial request>) -> User(<executor output>)
+        cx.update(|cx| {
+            discriminator_thread.update(cx, |thread, _cx| {
+                let request_text: String = initial_message
+                    .iter()
+                    .filter_map(|c| match c {
+                        UserMessageContent::Text(t) => Some(t.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                thread.push_agent_message(vec![AgentMessageContent::Text(request_text)]);
+            })
+        })?;
+
         let mut current_input = initial_message;
         let mut iteration = 0;
 

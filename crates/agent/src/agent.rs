@@ -446,26 +446,47 @@ impl NativeAgent {
             )]);
 
             // Now flip all executor messages:
-            // - Executor USER messages become discriminator ASSISTANT messages
-            // - Executor AGENT messages become discriminator USER messages
+            // - Executor USER messages become discriminator ASSISTANT messages (1:1)
+            // - Consecutive executor AGENT messages become ONE discriminator USER message
+            //   (humans don't call tools, they speak once - so we squeeze agent turns together)
+            let mut pending_agent_content = String::new();
+
             for message in &executor_messages {
                 match message {
                     Message::User(user_msg) => {
+                        // First, flush any pending agent content as a single User message
+                        if !pending_agent_content.is_empty() {
+                            thread.push_user_message(vec![UserMessageContent::Text(
+                                pending_agent_content.clone(),
+                            )]);
+                            pending_agent_content.clear();
+                        }
+
                         // User's request/feedback → discriminator "asked for" this (ASSISTANT)
-                        // Strip "## User\n\n" header to avoid role confusion
-                        let markdown = crate::dual::strip_role_header(&user_msg.to_markdown());
+                        let markdown = user_msg
+                            .to_markdown()
+                            .replace("## User\n\n", "")
+                            .replace("## Assistant\n\n", "");
                         thread.push_agent_message(vec![AgentMessageContent::Text(markdown)]);
                     }
                     Message::Agent(agent_msg) => {
-                        // Executor's work → discriminator reviews this (USER)
-                        // Strip "## Assistant\n\n" header to avoid role confusion
-                        let markdown = crate::dual::strip_role_header(&agent_msg.to_markdown());
-                        thread.push_user_message(vec![UserMessageContent::Text(markdown)]);
+                        // Accumulate agent content - will be flushed as ONE User message
+                        let markdown = agent_msg
+                            .to_markdown()
+                            .replace("## Assistant\n\n", "")
+                            .replace("## User\n\n", "");
+                        pending_agent_content.push_str(&markdown);
+                        pending_agent_content.push('\n');
                     }
                     Message::Resume => {
                         // Skip resume markers in backfill
                     }
                 }
+            }
+
+            // Flush any remaining agent content
+            if !pending_agent_content.is_empty() {
+                thread.push_user_message(vec![UserMessageContent::Text(pending_agent_content)]);
             }
 
             log::debug!(
@@ -1089,7 +1110,11 @@ impl NativeAgentConnection {
     }
 
     /// Enable dual-agent mode for a session.
-    pub fn enable_dual_agent_mode(&self, session_id: acp::SessionId, cx: &mut App) -> Result<()> {
+    pub fn enable_dual_agent_mode(
+        &self,
+        session_id: acp::SessionId,
+        cx: &mut App,
+    ) -> Result<()> {
         self.0
             .update(cx, |agent, cx| agent.enable_dual_agent_mode(session_id, cx))
     }
@@ -1101,7 +1126,11 @@ impl NativeAgentConnection {
     }
 
     /// Toggle dual-agent mode for a session.
-    pub fn toggle_dual_agent_mode(&self, session_id: acp::SessionId, cx: &mut App) -> Result<bool> {
+    pub fn toggle_dual_agent_mode(
+        &self,
+        session_id: acp::SessionId,
+        cx: &mut App,
+    ) -> Result<bool> {
         if self.is_dual_agent_mode(&session_id, cx) {
             self.disable_dual_agent_mode(&session_id, cx)?;
             Ok(false)
