@@ -1,0 +1,47 @@
+# Agent Memory System Architecture
+
+```mermaid
+graph TD
+    A[Session] --> B[Meta-Plan]
+    A --> C[Cartridge]
+    A --> D[Composable Knowledge]
+
+    B --> B1[Zed Integration]
+    B --> B2[Qdrant Memory]
+    B --> B3[Vulkan Training]
+    B --> B4[Self-Healing]
+
+    C --> C1[Hierarchical Linking]
+    C --> C2[Composition Path]
+    C --> C3[Self-Reference]
+
+    D --> D1[Session Knowledge]
+    D --> D2[Plan Structure]
+    D --> D3[Cartridge Compose]
+    D --> D4[Meta-Index]
+
+    E[Learning Loop] --> A
+    E --> B
+    E --> C
+    E --> D
+
+    F[Composition] --> D
+    F --> G[Cartridge Assembly]
+    F --> H[Meta-Indexing]
+
+    G --> G1[Session Cartridges]
+    G --> G2[Plan Cartridges]
+    G --> G3[Cross-session]
+
+    H --> H1[Hierarchical]
+    H --> H2[Temporal]
+    H --> H3[Contextual]
+
+    style A fill:#e1f5fe,stroke:#000
+    style B fill:#f3e5f5,stroke:#000
+    style C fill:#e8f5e9,stroke:#000
+    style D fill:#fff3e0,stroke:#000
+    style E fill:#fce4ec,stroke:#000
+    style F fill:#f1f8e9,stroke:#000
+    style G fill:#e0f2f1,stroke:#000
+    style H fill:#fff8e1,stroke:#000
