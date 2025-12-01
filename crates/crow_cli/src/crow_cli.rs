@@ -362,16 +362,27 @@ enum TelemetryCommands {
             (content and tool calls), along with timing and token usage.\n\
             Essential for debugging why the agent behaved a certain way.",
         after_help = "EXAMPLES:\n    \
-            crow-cli telemetry trace abc123    # Full trace details\n\n\
+            crow-cli telemetry trace abc123           # Summary with truncated content\n    \
+            crow-cli telemetry trace abc123 --full    # Full untruncated output\n    \
+            crow-cli telemetry trace abc123 --json    # Complete JSON for export\n\n\
             The output includes:\n    \
-            - Request messages (system, user, assistant history)\n    \
+            - System prompt (rendered)\n    \
+            - Request messages (full conversation sent to LLM)\n    \
+            - Request tools (tool definitions)\n    \
             - Response content and tool calls\n    \
-            - Model info, latency, token counts\n    \
-            - Thread ID and prompt template used"
+            - Model info, latency, token counts"
     )]
     Trace {
         /// Trace ID
         trace_id: String,
+
+        /// Output as JSON (complete payload for scripting/export)
+        #[arg(long, short = 'j')]
+        json: bool,
+
+        /// Show full content without truncation
+        #[arg(long, short = 'f')]
+        full: bool,
     },
 }
 
@@ -410,9 +421,15 @@ fn main() {
 
         Some(Commands::Telemetry { command }) => run_telemetry_command(command),
 
-        Some(Commands::Traces { limit, session, json }) => {
-            run_telemetry_command(TelemetryCommands::Traces { limit, session, json })
-        }
+        Some(Commands::Traces {
+            limit,
+            session,
+            json,
+        }) => run_telemetry_command(TelemetryCommands::Traces {
+            limit,
+            session,
+            json,
+        }),
 
         Some(Commands::Prompts { json }) => {
             run_telemetry_command(TelemetryCommands::Prompts { json })
@@ -507,7 +524,10 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
                     session_id,
                     json,
                     last,
-                } => commands::sessions::run_show_session_command(session_id, json, last, &mut cx).await,
+                } => {
+                    commands::sessions::run_show_session_command(session_id, json, last, &mut cx)
+                        .await
+                }
                 SessionCommands::Delete { session_id, force } => {
                     commands::sessions::run_delete_session_command(session_id, force, &mut cx).await
                 }
@@ -555,12 +575,16 @@ fn run_telemetry_command(command: TelemetryCommands) -> Result<()> {
                 TelemetryCommands::Prompt { prompt_id } => {
                     commands::telemetry::show_prompt(prompt_id, &mut cx).await
                 }
-                TelemetryCommands::Traces { limit, session, json } => {
-                    commands::telemetry::list_traces(limit, session, json, &mut cx).await
-                }
-                TelemetryCommands::Trace { trace_id } => {
-                    commands::telemetry::show_trace(trace_id, &mut cx).await
-                }
+                TelemetryCommands::Traces {
+                    limit,
+                    session,
+                    json,
+                } => commands::telemetry::list_traces(limit, session, json, &mut cx).await,
+                TelemetryCommands::Trace {
+                    trace_id,
+                    json,
+                    full,
+                } => commands::telemetry::show_trace(trace_id, json, full, &mut cx).await,
             };
 
             if let Err(e) = result {
