@@ -4360,6 +4360,7 @@ dependencies = [
  "clock",
  "colored",
  "db",
+ "dirs 4.0.0",
  "env_logger 0.11.8",
  "fs",
  "futures 0.3.31",

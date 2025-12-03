@@ -418,6 +418,9 @@ impl NativeAgent {
         let acp_thread = executor_session.acp_thread.clone();
         let model = executor_session.thread.read(cx).model().cloned();
 
+        // Get the executor's TodoStore so we can share it with the discriminator
+        let executor_todo_store = executor_session.thread.read(cx).todo_store().clone();
+
         // Create discriminator thread with backfilled messages
         let discriminator_thread = cx.new(|cx| {
             let mut thread = Thread::new(
@@ -428,6 +431,9 @@ impl NativeAgent {
                 model,
                 cx,
             );
+
+            // Share the executor's TodoStore with the discriminator
+            thread.set_todo_store(executor_todo_store.clone());
 
             // Set the discriminator profile (uses discriminator_prompt.hbs and has task_complete enabled)
             let discriminator_profile_id =
@@ -499,6 +505,12 @@ impl NativeAgent {
         });
 
         let discriminator_session_id = discriminator_thread.read(cx).id().clone();
+
+        // Link the sessions in the shared TodoStore so they see the same todos
+        executor_todo_store.share_sessions(
+            &executor_session_id.0,
+            &discriminator_session_id.0,
+        );
 
         // Register discriminator session (shares the same AcpThread)
         let subscriptions = vec![cx.observe(&discriminator_thread, move |this, thread, cx| {

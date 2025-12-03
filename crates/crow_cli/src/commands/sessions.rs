@@ -15,8 +15,8 @@ pub async fn run_list_sessions_command(
 ) -> Result<()> {
     log::info!("Listing sessions (limit: {})", limit);
 
-    // Initialize (needed to set up the environment)
-    let _crow = init::initialize(cx).await?;
+    // Use minimal initialization - we only need database access, not full agent setup
+    init::initialize_minimal(cx)?;
 
     // Load threads directly from the database
     let database = cx
@@ -93,8 +93,8 @@ pub async fn run_show_session_command(
 ) -> Result<()> {
     log::info!("Showing session: {}", session_id);
 
-    // Initialize
-    let _crow = init::initialize(cx).await?;
+    // Use minimal initialization - we only need database access
+    init::initialize_minimal(cx)?;
 
     // Load the thread from database
     let database = cx
@@ -321,8 +321,8 @@ pub async fn run_delete_session_command(
 pub async fn run_inspect_session_command(session_id: String, cx: &mut AsyncApp) -> Result<()> {
     log::info!("Inspecting session: {}", session_id);
 
-    // Initialize
-    let _crow = init::initialize(cx).await?;
+    // Use minimal initialization - we only need database access
+    init::initialize_minimal(cx)?;
 
     // Load the thread from database
     let database = cx

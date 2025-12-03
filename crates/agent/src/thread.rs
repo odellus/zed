@@ -2,8 +2,8 @@ use crate::{
     AgentRole, ContextServerRegistry, CopyPathTool, CreateDirectoryTool, DbLanguageModel, DbThread,
     DeletePathTool, DiagnosticsTool, EditFileTool, FetchTool, FindPathTool, GrepTool,
     ListDirectoryTool, MovePathTool, NowTool, OpenTool, ProjectSnapshot, ReadFileTool,
-    SystemPromptTemplate, Templates, TerminalTool, ThinkingTool, ThreadsDatabase, TraceBuilder,
-    WebSearchTool,
+    SystemPromptTemplate, Templates, TerminalTool, ThinkingTool, ThreadsDatabase, TodoReadTool,
+    TodoStore, TodoWriteTool, TraceBuilder, WebSearchTool,
 };
 use acp_thread::{MentionUri, UserMessageId};
 use action_log::ActionLog;
@@ -608,6 +608,7 @@ pub struct Thread {
     pub(crate) prompt_capabilities_rx: watch::Receiver<acp::PromptCapabilities>,
     pub(crate) project: Entity<Project>,
     pub(crate) action_log: Entity<ActionLog>,
+    todo_store: TodoStore,
 }
 
 impl Thread {
@@ -666,11 +667,20 @@ impl Thread {
             prompt_capabilities_rx,
             project,
             action_log,
+            todo_store: TodoStore::new(),
         }
     }
 
     pub fn id(&self) -> &acp::SessionId {
         &self.id
+    }
+
+    pub fn todo_store(&self) -> &TodoStore {
+        &self.todo_store
+    }
+
+    pub fn set_todo_store(&mut self, store: TodoStore) {
+        self.todo_store = store;
     }
 
     pub fn replay(
@@ -861,6 +871,7 @@ impl Thread {
             updated_at: db_thread.updated_at,
             prompt_capabilities_tx,
             prompt_capabilities_rx,
+            todo_store: TodoStore::new(),
         }
     }
 
@@ -1029,6 +1040,14 @@ impl Thread {
         ));
         self.add_tool(TerminalTool::new(self.project.clone(), environment));
         self.add_tool(ThinkingTool);
+        self.add_tool(TodoReadTool::new(
+            self.todo_store.clone(),
+            self.id.0.to_string(),
+        ));
+        self.add_tool(TodoWriteTool::new(
+            self.todo_store.clone(),
+            self.id.0.to_string(),
+        ));
         self.add_tool(WebSearchTool);
     }
 

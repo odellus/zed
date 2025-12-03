@@ -154,8 +154,8 @@ pub async fn list_traces(
             println!(
                 "{} {} {} {} {} {} {}",
                 trace.started_at.format("%H:%M:%S").to_string().dimmed(),
+                &trace.id[..8].bright_white(),
                 role_color,
-                format!("{}/{}", trace.model_provider, trace.model_id).bright_blue(),
                 latency.yellow(),
                 tokens.dimmed(),
                 status,

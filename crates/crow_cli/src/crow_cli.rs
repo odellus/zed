@@ -222,6 +222,33 @@ enum Commands {
         #[arg(long, short = 'j')]
         json: bool,
     },
+
+    /// Import API keys from system keyring
+    #[command(
+        long_about = "Import API keys from the system keyring into crow-cli's credential store.\n\n\
+            This allows crow-cli to use API keys stored by Zed without requiring\n\
+            keyring access on every command. You may be prompted for your system password.",
+        after_help = "EXAMPLES:\n    \
+            crow-cli login      # Import keys from keyring\n    \
+            crow-cli status     # Check which credentials are available\n    \
+            crow-cli logout     # Clear stored credentials"
+    )]
+    Login,
+
+    /// Clear stored credentials
+    #[command(
+        long_about = "Remove all API keys from crow-cli's local credential store.\n\n\
+            This does not affect credentials stored in the system keyring or Zed."
+    )]
+    Logout,
+
+    /// Show credential status
+    #[command(
+        long_about = "Display which API credentials are available to crow-cli.\n\n\
+            Shows both file-stored credentials (from 'crow-cli login') and\n\
+            environment variables."
+    )]
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -435,6 +462,10 @@ fn main() {
             run_telemetry_command(TelemetryCommands::Prompts { json })
         }
 
+        Some(Commands::Login) => run_login(),
+        Some(Commands::Logout) => run_logout(),
+        Some(Commands::Status) => run_status(),
+
         None => {
             // No subcommand - treat trailing args as chat message
             if cli.message.is_empty() {
@@ -552,6 +583,57 @@ fn run_new_session(title: Option<String>) -> Result<()> {
     Application::headless().run(move |cx| {
         cx.spawn(async move |mut cx| {
             let result = commands::sessions::run_new_session_command(title, &mut cx).await;
+
+            if let Err(e) = result {
+                eprintln!("Error: {:#}", e);
+            }
+
+            std::process::exit(0);
+        })
+        .detach();
+    });
+
+    Ok(())
+}
+
+fn run_login() -> Result<()> {
+    Application::headless().run(move |cx| {
+        cx.spawn(async move |mut cx| {
+            let result = commands::login::run_login_command(&mut cx).await;
+
+            if let Err(e) = result {
+                eprintln!("Error: {:#}", e);
+            }
+
+            std::process::exit(0);
+        })
+        .detach();
+    });
+
+    Ok(())
+}
+
+fn run_logout() -> Result<()> {
+    Application::headless().run(move |cx| {
+        cx.spawn(async move |mut cx| {
+            let result = commands::login::run_logout_command(&mut cx).await;
+
+            if let Err(e) = result {
+                eprintln!("Error: {:#}", e);
+            }
+
+            std::process::exit(0);
+        })
+        .detach();
+    });
+
+    Ok(())
+}
+
+fn run_status() -> Result<()> {
+    Application::headless().run(move |cx| {
+        cx.spawn(async move |mut cx| {
+            let result = commands::login::run_status_command(&mut cx).await;
 
             if let Err(e) = result {
                 eprintln!("Error: {:#}", e);

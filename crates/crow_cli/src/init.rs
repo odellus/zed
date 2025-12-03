@@ -2,19 +2,86 @@ use acp_thread::AgentConnection;
 use anyhow::{Context as _, Result};
 use client::Client;
 use fs::RealFs;
-use gpui::{App, AppContext as _, AsyncApp, Entity, UpdateGlobal as _};
+use gpui::{App, AppContext as _, AsyncApp, Entity, SemanticVersion, UpdateGlobal as _};
 use language::LanguageRegistry;
 use language_model::LanguageModelRegistry;
 use node_runtime::NodeRuntime;
 use project::Project;
 use prompt_store::PromptBuilder;
+use release_channel::ReleaseChannel;
 use reqwest_client::ReqwestClient;
+use serde::Deserialize;
 use settings::{Settings as _, SettingsStore};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use paths;
+
+/// Auth entry from crow's auth.json file
+#[derive(Debug, Deserialize)]
+struct AuthEntry {
+    #[serde(rename = "type")]
+    auth_type: String,
+    key: String,
+}
+
+/// Mapping from auth.json provider names to environment variable names
+fn provider_to_env_var(provider: &str) -> Option<&'static str> {
+    match provider {
+        "moonshotai" | "moonshot" => Some("MOONSHOT_API_KEY"),
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "openai" => Some("OPENAI_API_KEY"),
+        "google" | "google-ai" => Some("GOOGLE_AI_API_KEY"),
+        "deepseek" => Some("DEEPSEEK_API_KEY"),
+        "mistral" => Some("MISTRAL_API_KEY"),
+        "groq" => Some("GROQ_API_KEY"),
+        "xai" | "x-ai" => Some("XAI_API_KEY"),
+        _ => None,
+    }
+}
+
+/// Load API keys from ~/.local/share/crow/auth.json and set as environment variables.
+/// This allows crow-cli to use credentials stored by the crow auth system.
+fn load_crow_auth() {
+    let auth_path = dirs::data_dir()
+        .map(|d| d.join("crow").join("auth.json"))
+        .unwrap_or_else(|| PathBuf::from("~/.local/share/crow/auth.json"));
+
+    let content = match std::fs::read_to_string(&auth_path) {
+        Ok(c) => c,
+        Err(_) => {
+            log::debug!("No crow auth.json found at {:?}", auth_path);
+            return;
+        }
+    };
+
+    let auth_data: HashMap<String, AuthEntry> = match serde_json::from_str(&content) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("Failed to parse crow auth.json: {}", e);
+            return;
+        }
+    };
+
+    for (provider, entry) in auth_data {
+        if entry.auth_type != "api" {
+            continue;
+        }
+        if let Some(env_var) = provider_to_env_var(&provider) {
+            // Only set if not already set (env var takes precedence)
+            if std::env::var(env_var).is_err() {
+                // SAFETY: We're setting env vars before any threads are spawned,
+                // and only once during initialization.
+                unsafe { std::env::set_var(env_var, &entry.key) };
+                log::info!("Loaded {} from crow auth.json", env_var);
+            }
+        } else {
+            log::debug!("Unknown provider in auth.json: {}", provider);
+        }
+    }
+}
 
 use agent::{HistoryStore, NativeAgent, NativeAgentConnection, Templates};
 use agent_settings::AgentSettings;
@@ -39,9 +106,48 @@ impl CrowContext {
     }
 }
 
+/// Minimal initialization for database-only operations (listing sessions, etc.)
+/// This skips provider authentication and project setup which can be slow or hang.
+pub fn initialize_minimal(cx: &mut AsyncApp) -> Result<()> {
+    // Load user settings from ~/.config/zed/settings.json
+    let user_settings_content = std::fs::read_to_string(paths::settings_file())
+        .ok()
+        .unwrap_or_default();
+
+    cx.update(|cx| {
+        // Initialize tokio runtime for async operations
+        gpui_tokio::init(cx);
+
+        // Set release channel to Dev to use file-based credentials instead of keyring
+        // This avoids blocking keyring prompts in headless/CLI mode
+        release_channel::init_test(SemanticVersion::default(), ReleaseChannel::Dev, cx);
+
+        let settings_store = SettingsStore::new(cx, &settings::default_settings());
+        cx.set_global(settings_store);
+
+        // Register agent settings (needed for paths)
+        AgentSettings::register(cx);
+
+        // Load user settings from config file
+        if !user_settings_content.is_empty() {
+            let parse_result = SettingsStore::update_global(cx, |store, cx| {
+                store.set_user_settings(&user_settings_content, cx)
+            });
+            if parse_result.requires_user_action() {
+                log::warn!("Settings parse issues: {:?}", parse_result);
+            }
+        }
+    })?;
+
+    Ok(())
+}
+
 /// Initialize all the components needed to run the agent in headless mode
 pub async fn initialize(cx: &mut AsyncApp) -> Result<CrowContext> {
     let cwd = std::env::current_dir().context("Failed to get current directory")?;
+
+    // Load API keys from crow's auth.json before provider initialization
+    load_crow_auth();
 
     // Load user settings from ~/.config/zed/settings.json
     let user_settings_content = std::fs::read_to_string(paths::settings_file())
@@ -52,6 +158,10 @@ pub async fn initialize(cx: &mut AsyncApp) -> Result<CrowContext> {
     let (fs, client, user_store, languages, authenticate_tasks) = cx.update(|cx| {
         // Initialize tokio runtime for async operations
         gpui_tokio::init(cx);
+
+        // Set release channel to Dev to use file-based credentials instead of keyring
+        // This avoids blocking keyring prompts in headless/CLI mode
+        release_channel::init_test(SemanticVersion::default(), ReleaseChannel::Dev, cx);
 
         let settings_store = SettingsStore::new(cx, &settings::default_settings());
         cx.set_global(settings_store);

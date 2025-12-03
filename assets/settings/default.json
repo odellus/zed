@@ -940,6 +940,8 @@
           "grep": true,
           "terminal": true,
           "thinking": true,
+          "todo_read": true,
+          "todo_write": true,
           "web_search": true
         }
       },
@@ -958,6 +960,8 @@
           "open": true,
           "grep": true,
           "thinking": true,
+          "todo_read": true,
+          "todo_write": true,
           "web_search": true
         }
       },
@@ -976,7 +980,9 @@
           "list_directory": true,
           "find_path": true,
           "grep": true,
-          "thinking": true
+          "thinking": true,
+          "todo_read": true,
+          "todo_write": true
         }
       }
     },

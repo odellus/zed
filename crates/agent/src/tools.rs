@@ -15,6 +15,7 @@ mod read_file_tool;
 mod task_complete_tool;
 mod terminal_tool;
 mod thinking_tool;
+mod todo_tool;
 mod web_search_tool;
 
 use crate::AgentTool;
@@ -37,6 +38,7 @@ pub use read_file_tool::*;
 pub use task_complete_tool::*;
 pub use terminal_tool::*;
 pub use thinking_tool::*;
+pub use todo_tool::*;
 pub use web_search_tool::*;
 
 macro_rules! tools {
