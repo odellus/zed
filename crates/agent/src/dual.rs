@@ -5,20 +5,21 @@
 //! - Discriminator: reviews executor's work, calls task_complete when satisfied
 //!
 //! Both stream their events to the same AcpThread for unified UI display.
+//!
+//! ## Summarization Checkpoints
+//!
+//! Instead of passing entire conversation histories between agents (which blows up
+//! context limits), we use summarization checkpoints:
+//!
+//! 1. Executor finishes react loop
+//! 2. We inject a "summarize your work" prompt to executor
+//! 3. Executor's summary is sent to discriminator
+//! 4. Discriminator reviews and either calls task_complete or provides feedback
+//! 5. If feedback, we inject "summarize your feedback" prompt to discriminator
+//! 6. Discriminator's feedback summary is sent back to executor
+//! 7. Repeat until task_complete or max iterations
 
-use crate::{AgentMessageContent, NativeAgentConnection, Thread, ThreadEvent, UserMessageContent};
-
-/// Strip markdown role headers like "## User\n\n" or "## Assistant\n\n" from content.
-/// Used when role-flipping messages for the discriminator to avoid confusion.
-pub fn strip_role_header(markdown: &str) -> String {
-    if let Some(rest) = markdown.strip_prefix("## User\n\n") {
-        rest.to_string()
-    } else if let Some(rest) = markdown.strip_prefix("## Assistant\n\n") {
-        rest.to_string()
-    } else {
-        markdown.to_string()
-    }
-}
+use crate::{NativeAgentConnection, Thread, ThreadEvent, UserMessageContent};
 use acp_thread::{AcpThread, UserMessageId};
 use agent_client_protocol as acp;
 use anyhow::{Result, anyhow};
@@ -32,6 +33,29 @@ pub const TASK_COMPLETE_TOOL: &str = "task_complete";
 /// Maximum number of executor↔discriminator iterations before giving up.
 /// This prevents infinite loops if the discriminator never calls task_complete.
 pub const MAX_DUAL_AGENT_ITERATIONS: u32 = 10;
+
+/// Prompt injected into executor session after react loop completes.
+/// Asks executor to summarize its work concisely for discriminator review.
+pub const EXECUTOR_SUMMARY_PROMPT: &str = r#"Please provide a concise summary of your work since my last message. Include:
+
+1. **Goal**: What you were trying to accomplish
+2. **Approach**: How you approached the problem
+3. **Changes Made**: Which files you created, edited, or deleted
+4. **Testing**: Location and how to run any tests you created or modified
+5. **Running**: Location and how to run anything you built that can be executed
+
+Do NOT call any tools. Reply directly with the summary in markdown format."#;
+
+/// Prompt injected into discriminator session after it provides feedback.
+/// Asks discriminator to summarize its feedback concisely for executor.
+pub const DISCRIMINATOR_FEEDBACK_PROMPT: &str = r#"Please provide a concise summary of your feedback on the executor's work. Include:
+
+1. **Assessment**: Is the work complete, incomplete, or incorrect?
+2. **Issues Found**: Specific problems that need to be addressed
+3. **Suggestions**: Concrete steps the executor should take to fix the issues
+4. **Priority**: Which issues are most critical to address first
+
+Do NOT call any tools. Reply directly with the feedback summary in markdown format."#;
 
 /// Orchestrates dual-agent execution.
 ///
@@ -111,9 +135,9 @@ impl DualAgentOrchestrator {
         initial_message: Vec<UserMessageContent>,
         cx: &mut AsyncApp,
     ) -> Result<acp::PromptResponse> {
-        // On first call, add the initial request as Agent message in discriminator.
-        // This represents "what the user asked for" before we show executor's output.
-        // Discriminator sees: User("How can I help?") -> Agent(<initial request>) -> User(<executor output>)
+        // Setup discriminator's initial context:
+        // The discriminator sees the user's task as ITS OWN task (from assistant perspective)
+        // So: User("How can I help?") -> Assistant(<the actual user request>)
         cx.update(|cx| {
             discriminator_thread.update(cx, |thread, _cx| {
                 let request_text: String = initial_message
@@ -124,7 +148,7 @@ impl DualAgentOrchestrator {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                thread.push_agent_message(vec![AgentMessageContent::Text(request_text)]);
+                thread.push_agent_message(vec![crate::AgentMessageContent::Text(request_text)]);
             })
         })?;
 
@@ -149,7 +173,8 @@ impl DualAgentOrchestrator {
                 iteration,
                 MAX_DUAL_AGENT_ITERATIONS
             );
-            // 1. Run executor turn with current input
+
+            // === STEP 1: Run executor with current input (user request or discriminator feedback) ===
             log::debug!("Dual-agent: Running executor turn");
             let executor_events = cx.update(|cx| {
                 executor_thread.update(cx, |thread, cx| {
@@ -158,28 +183,37 @@ impl DualAgentOrchestrator {
                 })
             })??;
 
-            // Stream executor events to the shared AcpThread
+            // Stream executor's react loop to UI
             Self::forward_events_to_acp_thread(executor_events, acp_thread.clone(), cx).await?;
+            log::debug!("Dual-agent: Executor react loop complete");
 
-            // 2. Export executor's last turn to markdown
-            let executor_output = cx.update(|cx| executor_thread.read(cx).export_last_turn())?;
+            // === STEP 2: Ask executor to summarize its work ===
+            log::debug!("Dual-agent: Requesting executor summary");
+            let executor_summary = Self::request_summary(
+                &executor_thread,
+                EXECUTOR_SUMMARY_PROMPT,
+                &acp_thread,
+                cx,
+            )
+            .await?;
 
             log::debug!(
-                "Dual-agent: Executor turn complete, output length: {}",
-                executor_output.len()
+                "Dual-agent: Executor summary length: {}",
+                executor_summary.len()
             );
 
-            // 3. Send executor output to discriminator as USER message (role flip)
-            log::debug!("Dual-agent: Running discriminator turn");
+            // === STEP 3: Send summary to discriminator as USER message ===
+            // Discriminator sees executor's summary as if a user is reporting work done
+            log::debug!("Dual-agent: Running discriminator review");
             let discriminator_events = cx.update(|cx| {
                 discriminator_thread.update(cx, |thread, cx| {
                     let id = UserMessageId::new();
-                    let content = vec![UserMessageContent::Text(executor_output)];
+                    let content = vec![UserMessageContent::Text(executor_summary)];
                     thread.send(id, content, cx)
                 })
             })??;
 
-            // 4. Stream discriminator events, watching for task_complete
+            // === STEP 4: Stream discriminator events, watch for task_complete ===
             let result = Self::forward_events_watching_for_complete(
                 discriminator_events,
                 acp_thread.clone(),
@@ -196,19 +230,89 @@ impl DualAgentOrchestrator {
                     });
                 }
                 LoopResult::Continue => {
-                    // 5. Export discriminator feedback and loop back to executor
-                    let feedback =
-                        cx.update(|cx| discriminator_thread.read(cx).export_last_turn())?;
+                    // === STEP 5: Ask discriminator to summarize its feedback ===
+                    log::debug!("Dual-agent: Requesting discriminator feedback summary");
+                    let feedback_summary = Self::request_summary(
+                        &discriminator_thread,
+                        DISCRIMINATOR_FEEDBACK_PROMPT,
+                        &acp_thread,
+                        cx,
+                    )
+                    .await?;
 
                     log::debug!(
-                        "Dual-agent: Discriminator gave feedback, length: {}",
-                        feedback.len()
+                        "Dual-agent: Discriminator feedback length: {}",
+                        feedback_summary.len()
                     );
 
-                    current_input = vec![UserMessageContent::Text(feedback)];
+                    // === STEP 6: Send feedback back to executor for next iteration ===
+                    current_input = vec![UserMessageContent::Text(feedback_summary)];
                 }
             }
         }
+    }
+
+    /// Send a summary request to a thread and collect the text response.
+    ///
+    /// This injects a user message asking for a summary, runs the agent's response,
+    /// and extracts the text content (ignoring any tool calls).
+    async fn request_summary(
+        thread: &Entity<Thread>,
+        prompt: &str,
+        acp_thread: &WeakEntity<AcpThread>,
+        cx: &mut AsyncApp,
+    ) -> Result<String> {
+        // Send the summary request
+        let mut events = cx.update(|cx| {
+            thread.update(cx, |thread, cx| {
+                let id = UserMessageId::new();
+                let content = vec![UserMessageContent::Text(prompt.to_string())];
+                thread.send(id, content, cx)
+            })
+        })??;
+
+        // Collect text from the response
+        let mut summary_text = String::new();
+
+        // We don't forward summary request events to the UI - these are internal
+        // Just collect the text response
+        while let Some(result) = events.next().await {
+            match result {
+                Ok(ThreadEvent::AgentText(text)) => {
+                    summary_text.push_str(&text);
+                }
+                Ok(ThreadEvent::Stop(_)) => {
+                    break;
+                }
+                Ok(ThreadEvent::ToolCall(_)) => {
+                    // Agent tried to call a tool despite being asked not to
+                    // Log warning but continue collecting text
+                    log::warn!("Dual-agent: Agent called tool during summary request (ignoring)");
+                }
+                Ok(_) => {
+                    // Ignore other events (thinking, tool updates, etc.)
+                }
+                Err(e) => {
+                    log::error!("Error during summary request: {:?}", e);
+                    return Err(e);
+                }
+            }
+        }
+
+        // Forward a marker to UI so user knows summarization happened
+        acp_thread.update(cx, |thread, cx| {
+            thread.push_assistant_content_block(
+                acp::ContentBlock::Text(acp::TextContent {
+                    text: format!("📋 *Summary checkpoint*"),
+                    annotations: None,
+                    meta: None,
+                }),
+                false, // not thinking
+                cx,
+            )
+        })?;
+
+        Ok(summary_text)
     }
 
     /// Forward events from a Thread to the AcpThread.

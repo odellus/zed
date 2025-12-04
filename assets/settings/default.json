@@ -973,16 +973,28 @@
       "discriminator": {
         "name": "Discriminator",
         "prompt_template": "discriminator",
-        "enable_all_context_servers": false,
+        "enable_all_context_servers": true,
         "tools": {
           "task_complete": true,
-          "read_file": true,
+          "copy_path": true,
+          "create_directory": true,
+          "delete_path": true,
+          "diagnostics": true,
+          "edit_file": true,
+          "fetch": true,
           "list_directory": true,
+          "project_notifications": false,
+          "move_path": true,
+          "now": true,
           "find_path": true,
+          "read_file": true,
+          "open": true,
           "grep": true,
+          "terminal": true,
           "thinking": true,
           "todo_read": true,
-          "todo_write": true
+          "todo_write": true,
+          "web_search": true
         }
       }
     },
