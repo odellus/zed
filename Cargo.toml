@@ -42,6 +42,7 @@ members = [
     "crates/context_server",
     "crates/copilot",
     "crates/crow_cli",
+    "crates/crow_telemetry",
     "crates/crashes",
     "crates/credentials_provider",
     "crates/dap",
@@ -279,6 +280,7 @@ component = { path = "crates/component" }
 context_server = { path = "crates/context_server" }
 copilot = { path = "crates/copilot" }
 crashes = { path = "crates/crashes" }
+crow_telemetry = { path = "crates/crow_telemetry" }
 credentials_provider = { path = "crates/credentials_provider" }
 crossbeam = "0.8.4"
 dap = { path = "crates/dap" }

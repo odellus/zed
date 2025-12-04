@@ -809,6 +809,73 @@ impl ThreadsDatabase {
             Ok(traces)
         })
     }
+
+    /// List recent traces filtered by agent role
+    pub fn list_traces_by_role(&self, role: AgentRole, limit: usize) -> Task<Result<Vec<Trace>>> {
+        let connection = self.connection.clone();
+        let role_str = role.as_str().to_string();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            // We need to filter by role which is stored in the JSON data
+            // For efficiency, we fetch more and filter, or use JSON extraction if supported
+            let query = format!(
+                "SELECT data FROM traces ORDER BY started_at DESC LIMIT {}",
+                limit * 10 // Fetch more to account for filtering
+            );
+
+            let mut select = connection.select_bound::<(), String>(&query)?;
+
+            let rows = select(())?;
+            let mut traces = Vec::new();
+
+            for data in rows {
+                if let Ok(trace) = serde_json::from_str::<Trace>(&data) {
+                    if trace.agent_role.as_str() == role_str {
+                        traces.push(trace);
+                        if traces.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            Ok(traces)
+        })
+    }
+
+    /// List recent traces from external agents (Claude Code, Gemini, etc.)
+    pub fn list_external_traces(&self, limit: usize) -> Task<Result<Vec<Trace>>> {
+        let connection = self.connection.clone();
+
+        self.executor.spawn(async move {
+            let connection = connection.lock();
+
+            let query = format!(
+                "SELECT data FROM traces ORDER BY started_at DESC LIMIT {}",
+                limit * 10
+            );
+
+            let mut select = connection.select_bound::<(), String>(&query)?;
+
+            let rows = select(())?;
+            let mut traces = Vec::new();
+
+            for data in rows {
+                if let Ok(trace) = serde_json::from_str::<Trace>(&data) {
+                    if trace.agent_role.is_external() {
+                        traces.push(trace);
+                        if traces.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            Ok(traces)
+        })
+    }
 }
 
 /// Represents a paired executor/discriminator session for dual-agent mode
@@ -837,6 +904,12 @@ pub enum AgentRole {
     Discriminator,
     EditAgent,
     DiffJudge,
+    /// External agent: Claude Code via ACP
+    ExternalClaudeCode,
+    /// External agent: Gemini via ACP
+    ExternalGemini,
+    /// External agent: Custom/other via ACP
+    ExternalCustom,
 }
 
 impl AgentRole {
@@ -846,6 +919,9 @@ impl AgentRole {
             AgentRole::Discriminator => "discriminator",
             AgentRole::EditAgent => "edit_agent",
             AgentRole::DiffJudge => "diff_judge",
+            AgentRole::ExternalClaudeCode => "external_claude_code",
+            AgentRole::ExternalGemini => "external_gemini",
+            AgentRole::ExternalCustom => "external_custom",
         }
     }
 
@@ -855,8 +931,19 @@ impl AgentRole {
             "discriminator" => Some(AgentRole::Discriminator),
             "edit_agent" => Some(AgentRole::EditAgent),
             "diff_judge" => Some(AgentRole::DiffJudge),
+            "external_claude_code" => Some(AgentRole::ExternalClaudeCode),
+            "external_gemini" => Some(AgentRole::ExternalGemini),
+            "external_custom" => Some(AgentRole::ExternalCustom),
             _ => None,
         }
+    }
+
+    /// Returns true if this is an external agent (ACP-based)
+    pub fn is_external(&self) -> bool {
+        matches!(
+            self,
+            AgentRole::ExternalClaudeCode | AgentRole::ExternalGemini | AgentRole::ExternalCustom
+        )
     }
 }
 

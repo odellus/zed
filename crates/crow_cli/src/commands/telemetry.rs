@@ -1,6 +1,7 @@
 use agent::ThreadsDatabase;
 use anyhow::Result;
 use colored::Colorize;
+use crow_telemetry::CrowTelemetryDb;
 use gpui::AsyncApp;
 
 use crate::init;
@@ -133,6 +134,9 @@ pub async fn list_traces(
                 agent::AgentRole::Discriminator => "discriminator".yellow(),
                 agent::AgentRole::EditAgent => "edit_agent".magenta(),
                 agent::AgentRole::DiffJudge => "diff_judge".blue(),
+                agent::AgentRole::ExternalClaudeCode => "claude-code".bright_magenta(),
+                agent::AgentRole::ExternalGemini => "gemini".bright_blue(),
+                agent::AgentRole::ExternalCustom => "custom".bright_yellow(),
             };
 
             let latency = trace
@@ -195,7 +199,7 @@ pub async fn show_trace(trace_id: String, json: bool, full: bool, cx: &mut Async
                     "model_id": t.model_id,
                     "template_inputs": t.template_inputs,
                     "rendered_prompt": t.rendered_prompt,
-                    "request_messages": serde_json::from_str::<serde_json::Value>(&t.request_messages).ok(),
+                    "request_messages": serde_json::from_str::<serde_json::Value>(&t.request_messages).unwrap_or_else(|_| serde_json::Value::String(t.request_messages.clone())),
                     "request_tools": t.request_tools.as_ref().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
                     "response_content": t.response_content,
                     "response_tool_calls": t.response_tool_calls.as_ref().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
@@ -352,6 +356,206 @@ pub async fn show_trace(trace_id: String, json: bool, full: bool, cx: &mut Async
         }
         None => {
             eprintln!("Trace not found: {}", trace_id);
+        }
+    }
+
+    Ok(())
+}
+
+/// List traces from external agents (Claude Code, Gemini via ACP)
+pub async fn list_external_traces(
+    limit: usize,
+    json: bool,
+    cx: &mut AsyncApp,
+) -> Result<()> {
+    let _crow = init::initialize(cx).await?;
+
+    let database = cx
+        .update(|cx| CrowTelemetryDb::connect(cx))?
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let traces = database.list_external_traces(limit).await?;
+
+    if json {
+        let json_output: Vec<_> = traces
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "id": t.id,
+                    "session_id": t.session_id,
+                    "agent_role": t.agent_role.as_str(),
+                    "model_provider": t.model_provider,
+                    "model_id": t.model_id,
+                    "latency_ms": t.latency_ms,
+                    "input_tokens": t.input_tokens,
+                    "output_tokens": t.output_tokens,
+                    "started_at": t.started_at.to_rfc3339(),
+                    "error": t.error,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_output)?);
+    } else {
+        println!("{}", "External Agent Traces (Claude Code, Gemini, etc.)".green().bold());
+        println!("{}", "─".repeat(100));
+
+        if traces.is_empty() {
+            println!("{}", "No external agent traces found.".dimmed());
+            println!();
+            println!("External traces are captured when you use Claude Code or Gemini");
+            println!("through Zed's Agent Panel (not crow-cli's native agent).");
+        } else {
+            for trace in &traces {
+                let role_color = match trace.agent_role {
+                    crow_telemetry::AgentRole::ExternalClaudeCode => "claude-code".bright_magenta(),
+                    crow_telemetry::AgentRole::ExternalGemini => "gemini".bright_blue(),
+                    crow_telemetry::AgentRole::ExternalCustom => "custom".bright_yellow(),
+                    _ => trace.agent_role.as_str().normal(),
+                };
+
+                let latency = trace
+                    .latency_ms
+                    .map(|ms| format!("{}ms", ms))
+                    .unwrap_or_else(|| "?".to_string());
+
+                let tokens = match (trace.input_tokens, trace.output_tokens) {
+                    (Some(i), Some(o)) => format!("{}/{}", i, o),
+                    _ => "-/-".to_string(),
+                };
+
+                let status = if trace.error.is_some() {
+                    "ERROR".red()
+                } else {
+                    "OK".green()
+                };
+
+                println!(
+                    "{} {} {} {} {} {} {}",
+                    trace.started_at.format("%H:%M:%S").to_string().dimmed(),
+                    &trace.id[..8].bright_white(),
+                    role_color,
+                    latency.yellow(),
+                    tokens.dimmed(),
+                    status,
+                    format!("[{}]", &trace.session_id[..8]).dimmed(),
+                );
+            }
+        }
+
+        println!();
+        println!("{} external traces", traces.len());
+    }
+
+    Ok(())
+}
+
+/// Show a specific external trace's full details
+pub async fn show_external_trace(trace_id: String, json: bool, full: bool, cx: &mut AsyncApp) -> Result<()> {
+    let _crow = init::initialize(cx).await?;
+
+    let database = cx
+        .update(|cx| CrowTelemetryDb::connect(cx))?
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let trace = database.get_trace(trace_id.clone()).await?;
+
+    match trace {
+        Some(t) => {
+            if json {
+                let json_output = serde_json::json!({
+                    "id": t.id,
+                    "session_id": t.session_id,
+                    "thread_id": t.thread_id,
+                    "prompt_id": t.prompt_id,
+                    "agent_role": t.agent_role.as_str(),
+                    "model_provider": t.model_provider,
+                    "model_id": t.model_id,
+                    "request_messages": serde_json::from_str::<serde_json::Value>(&t.request_messages).unwrap_or_else(|_| serde_json::Value::String(t.request_messages.clone())),
+                    "response_content": t.response_content,
+                    "input_tokens": t.input_tokens,
+                    "output_tokens": t.output_tokens,
+                    "latency_ms": t.latency_ms,
+                    "started_at": t.started_at.to_rfc3339(),
+                    "completed_at": t.completed_at.map(|c| c.to_rfc3339()),
+                    "error": t.error,
+                });
+                println!("{}", serde_json::to_string_pretty(&json_output)?);
+                return Ok(());
+            }
+
+            println!("{}", "External Trace Details".green().bold());
+            println!("{}", "─".repeat(80));
+            println!("{}: {}", "ID".bright_cyan(), t.id);
+            println!("{}: {}", "Session ID".bright_cyan(), t.session_id);
+            println!("{}: {}", "Agent".bright_cyan(), t.agent_role.as_str());
+            println!(
+                "{}: {}/{}",
+                "Model".bright_cyan(),
+                t.model_provider,
+                t.model_id
+            );
+            println!("{}: {}", "Started".bright_cyan(), t.started_at);
+            if let Some(completed) = t.completed_at {
+                println!("{}: {}", "Completed".bright_cyan(), completed);
+            }
+            if let Some(latency) = t.latency_ms {
+                println!("{}: {}ms", "Latency".bright_cyan(), latency);
+            }
+
+            if let Some(error) = &t.error {
+                println!();
+                println!("{}", "Error".red().bold());
+                println!("{}", "─".repeat(40));
+                println!("{}", error);
+            }
+
+            // Request content
+            println!();
+            println!("{}", "Request Content".green().bold());
+            println!("{}", "─".repeat(80));
+            if let Ok(content) = serde_json::from_str::<serde_json::Value>(&t.request_messages) {
+                let formatted = serde_json::to_string_pretty(&content)?;
+                if full || formatted.len() <= 5000 {
+                    println!("{}", formatted);
+                } else {
+                    println!("{}...", &formatted[..5000]);
+                    println!(
+                        "{}",
+                        format!("({} chars total, use --full to see all)", formatted.len()).dimmed()
+                    );
+                }
+            } else {
+                let content = &t.request_messages;
+                if full || content.len() <= 2000 {
+                    println!("{}", content);
+                } else {
+                    println!("{}...", &content[..2000]);
+                    println!(
+                        "{}",
+                        format!("({} chars total, use --full to see all)", content.len()).dimmed()
+                    );
+                }
+            }
+
+            if let Some(response) = &t.response_content {
+                println!();
+                println!("{}", "Response".green().bold());
+                println!("{}", "─".repeat(80));
+                if full || response.len() <= 2000 {
+                    println!("{}", response);
+                } else {
+                    println!("{}...", &response[..2000]);
+                    println!(
+                        "{}",
+                        format!("({} chars total, use --full to see all)", response.len()).dimmed()
+                    );
+                }
+            }
+        }
+        None => {
+            eprintln!("External trace not found: {}", trace_id);
         }
     }
 

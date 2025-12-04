@@ -4,11 +4,13 @@ use action_log::ActionLog;
 use agent_client_protocol::{self as acp, Agent as _, ErrorCode};
 use anyhow::anyhow;
 use collections::HashMap;
+use crow_telemetry::{AgentRole, CrowTelemetryDb, TraceBuilder};
 use futures::AsyncBufReadExt as _;
 use futures::io::BufReader;
 use project::Project;
 use project::agent_server_store::AgentServerCommand;
 use serde::Deserialize;
+use std::sync::Arc;
 use util::ResultExt as _;
 
 use std::path::PathBuf;
@@ -36,6 +38,8 @@ pub struct AcpConnection {
     agent_capabilities: acp::AgentCapabilities,
     default_mode: Option<acp::SessionModeId>,
     root_dir: PathBuf,
+    /// Database for capturing traces from external agents (crow telemetry)
+    trace_database: Option<Arc<CrowTelemetryDb>>,
     // NB: Don't move this into the wait_task, since we need to ensure the process is
     // killed on drop (setting kill_on_drop on the command seems to not always work).
     child: smol::process::Child,
@@ -49,6 +53,10 @@ pub struct AcpSession {
     suppress_abort_err: bool,
     models: Option<Rc<RefCell<acp::SessionModelState>>>,
     session_modes: Option<Rc<RefCell<acp::SessionModeState>>>,
+    /// Accumulated response content from streaming (for trace capture)
+    response_content: Rc<RefCell<String>>,
+    /// Tool calls made during the session (for trace capture)
+    tool_calls: Rc<RefCell<Vec<String>>>,
 }
 
 pub async fn connect(
@@ -198,6 +206,16 @@ impl AcpConnection {
             return Err(UnsupportedVersion.into());
         }
 
+        // Try to connect to crow's trace database for telemetry capture
+        let trace_database = match cx.update(|cx| CrowTelemetryDb::connect(cx)) {
+            Ok(task) => task.await.ok().map(Arc::new),
+            Err(_) => None,
+        };
+
+        if trace_database.is_some() {
+            log::info!("Crow telemetry: connected to trace database for {}", server_name);
+        }
+
         Ok(Self {
             auth_methods: response.auth_methods,
             root_dir: root_dir.to_owned(),
@@ -207,6 +225,7 @@ impl AcpConnection {
             sessions,
             agent_capabilities: response.agent_capabilities,
             default_mode,
+            trace_database,
             _io_task: io_task,
             _wait_task: wait_task,
             _stderr_task: stderr_task,
@@ -367,6 +386,8 @@ impl AgentConnection for AcpConnection {
                 suppress_abort_err: false,
                 session_modes: modes,
                 models,
+                response_content: Rc::new(RefCell::new(String::new())),
+                tool_calls: Rc::new(RefCell::new(Vec::new())),
             };
             sessions.borrow_mut().insert(session_id, session);
 
@@ -400,6 +421,44 @@ impl AgentConnection for AcpConnection {
         let conn = self.connection.clone();
         let sessions = self.sessions.clone();
         let session_id = params.session_id.clone();
+        let trace_database = self.trace_database.clone();
+        let telemetry_id = self.telemetry_id;
+
+        // Determine agent role based on telemetry_id
+        let agent_role = match telemetry_id {
+            "claude-code" => AgentRole::ExternalClaudeCode,
+            "gemini" => AgentRole::ExternalGemini,
+            _ => AgentRole::ExternalCustom,
+        };
+
+        // Clear accumulated content from previous prompt and get refs for this prompt
+        let (response_content_ref, tool_calls_ref) = {
+            if let Some(session) = sessions.borrow().get(&session_id) {
+                session.response_content.borrow_mut().clear();
+                session.tool_calls.borrow_mut().clear();
+                (session.response_content.clone(), session.tool_calls.clone())
+            } else {
+                (Rc::new(RefCell::new(String::new())), Rc::new(RefCell::new(Vec::new())))
+            }
+        };
+
+        // Build trace before the call
+        let trace_builder = if trace_database.is_some() {
+            // ACP PromptRequest contains: session_id, prompt (content blocks), meta
+            let request_content = serde_json::to_string(&params.prompt).unwrap_or_default();
+            let builder = TraceBuilder::new(
+                session_id.0.to_string(),
+                agent_role,
+                telemetry_id.to_string(),
+                "unknown".to_string(), // ACP doesn't expose model in request
+                request_content,
+            );
+
+            Some(builder)
+        } else {
+            None
+        };
+
         cx.foreground_executor().spawn(async move {
             let result = conn.prompt(params).await;
 
@@ -411,8 +470,48 @@ impl AgentConnection for AcpConnection {
             }
 
             match result {
-                Ok(response) => Ok(response),
+                Ok(response) => {
+                    // Capture successful trace
+                    if let (Some(db), Some(builder)) = (trace_database.as_ref(), trace_builder) {
+                        // Get accumulated content from session notifications
+                        let response_content = {
+                            let content = response_content_ref.borrow();
+                            if content.is_empty() {
+                                None
+                            } else {
+                                Some(content.clone())
+                            }
+                        };
+                        let tool_calls = {
+                            let calls = tool_calls_ref.borrow();
+                            if calls.is_empty() {
+                                None
+                            } else {
+                                Some(calls.join(", "))
+                            }
+                        };
+                        let (input_tokens, output_tokens) = extract_token_usage(&response);
+
+                        let trace = builder.complete(
+                            response_content,
+                            tool_calls,
+                            input_tokens,
+                            output_tokens,
+                            None, // total tokens
+                        );
+
+                        db.save_trace(trace).await.log_err();
+                    }
+
+                    Ok(response)
+                }
                 Err(err) => {
+                    // Capture failed trace
+                    if let (Some(db), Some(builder)) = (trace_database.as_ref(), trace_builder) {
+                        let trace = builder.fail(err.to_string());
+                        db.save_trace(trace).await.log_err();
+                    }
+
                     if err.code == acp::ErrorCode::AUTH_REQUIRED.code {
                         return Err(anyhow!(acp::Error::auth_required()));
                     }
@@ -737,6 +836,19 @@ impl acp::Client for ClientDelegate {
             }
         }
 
+        // Accumulate content and tool calls for telemetry trace capture
+        match &notification.update {
+            acp::SessionUpdate::AgentMessageChunk(chunk) => {
+                if let acp::ContentBlock::Text(text_content) = &chunk.content {
+                    session.response_content.borrow_mut().push_str(&text_content.text);
+                }
+            }
+            acp::SessionUpdate::ToolCall(tool_call) => {
+                session.tool_calls.borrow_mut().push(tool_call.title.clone());
+            }
+            _ => {}
+        }
+
         // Clone so we can inspect meta both before and after handing off to the thread
         let update_clone = notification.update.clone();
 
@@ -946,4 +1058,18 @@ impl ClientDelegate {
             .context("Failed to get session")
             .map(|session| session.thread.clone())
     }
+}
+
+// ==================== Trace Extraction Helpers ====================
+
+/// Extract token usage from ACP response meta if available
+fn extract_token_usage(response: &acp::PromptResponse) -> (Option<i64>, Option<i64>) {
+    if let Some(meta) = &response.meta {
+        if let Some(usage) = meta.get("usage") {
+            let input = usage.get("input_tokens").and_then(|v| v.as_i64());
+            let output = usage.get("output_tokens").and_then(|v| v.as_i64());
+            return (input, output);
+        }
+    }
+    (None, None)
 }

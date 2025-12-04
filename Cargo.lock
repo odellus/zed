@@ -255,6 +255,7 @@ dependencies = [
  "async-trait",
  "client",
  "collections",
+ "crow_telemetry",
  "env_logger 0.11.8",
  "fs",
  "futures 0.3.31",
@@ -4359,6 +4360,7 @@ dependencies = [
  "client",
  "clock",
  "colored",
+ "crow_telemetry",
  "db",
  "dirs 4.0.0",
  "env_logger 0.11.8",
@@ -4383,6 +4385,23 @@ dependencies = [
  "settings",
  "theme",
  "util",
+]
+
+[[package]]
+name = "crow_telemetry"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dirs 4.0.0",
+ "gpui",
+ "indoc",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sqlez",
+ "uuid",
+ "zed_env_vars",
 ]
 
 [[package]]

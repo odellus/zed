@@ -249,6 +249,25 @@ enum Commands {
             environment variables."
     )]
     Status,
+
+    /// Connect to an external ACP agent (Claude Code, Gemini, etc.)
+    #[command(
+        long_about = "Connect directly to an ACP-compatible agent like Claude Code or Gemini.\n\n\
+            This bypasses the native crow agent and connects to an external agent server.\n\
+            Useful for debugging ACP telemetry capture and testing external agents.",
+        after_help = "EXAMPLES:\n    \
+            crow-cli acp claude                    # Interactive Claude Code session\n    \
+            crow-cli acp claude \"What is 2+2?\"    # One-shot message\n    \
+            crow-cli acp /path/to/agent            # Custom agent binary"
+    )]
+    Acp {
+        /// Agent to connect to: claude, gemini, or path to custom agent
+        #[arg(default_value = "claude")]
+        agent: String,
+
+        /// Message to send (if omitted, starts interactive mode)
+        message: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -411,6 +430,47 @@ enum TelemetryCommands {
         #[arg(long, short = 'f')]
         full: bool,
     },
+
+    /// List traces from external agents (Claude Code, Gemini via ACP)
+    #[command(
+        long_about = "List traces captured from external agents like Claude Code or Gemini.\n\n\
+            These are captured when you use Claude Code or Gemini through Zed's Agent Panel.\n\
+            Stored separately from native crow-cli traces in ~/.local/share/crow/telemetry.db",
+        after_help = "EXAMPLES:\n    \
+            crow-cli telemetry external              # Last 20 external traces\n    \
+            crow-cli telemetry external -n 50        # Last 50 traces\n    \
+            crow-cli telemetry external -j           # JSON output"
+    )]
+    External {
+        /// Maximum number of traces to show
+        #[arg(long, short = 'n', default_value = "20")]
+        limit: usize,
+
+        /// Output as JSON
+        #[arg(long, short = 'j')]
+        json: bool,
+    },
+
+    /// Show a specific external trace's full details
+    #[command(
+        long_about = "Display complete details for an external agent LLM call.\n\n\
+            Shows the full request content sent to Claude Code/Gemini and the response.",
+        after_help = "EXAMPLES:\n    \
+            crow-cli telemetry external-trace abc123        # Summary\n    \
+            crow-cli telemetry external-trace abc123 --full # Full output"
+    )]
+    ExternalTrace {
+        /// Trace ID
+        trace_id: String,
+
+        /// Output as JSON
+        #[arg(long, short = 'j')]
+        json: bool,
+
+        /// Show full content without truncation
+        #[arg(long, short = 'f')]
+        full: bool,
+    },
 }
 
 fn main() {
@@ -465,6 +525,7 @@ fn main() {
         Some(Commands::Login) => run_login(),
         Some(Commands::Logout) => run_logout(),
         Some(Commands::Status) => run_status(),
+        Some(Commands::Acp { agent, message }) => run_acp(agent, message),
 
         None => {
             // No subcommand - treat trailing args as chat message
@@ -514,6 +575,23 @@ fn run_chat(
                 &mut cx,
             )
             .await;
+
+            if let Err(e) = result {
+                eprintln!("Error: {:#}", e);
+            }
+
+            std::process::exit(0);
+        })
+        .detach();
+    });
+
+    Ok(())
+}
+
+fn run_acp(agent: String, message: Option<String>) -> Result<()> {
+    Application::headless().run(move |cx| {
+        cx.spawn(async move |mut cx| {
+            let result = commands::acp::run_acp_command(agent, message, &mut cx).await;
 
             if let Err(e) = result {
                 eprintln!("Error: {:#}", e);
@@ -667,6 +745,14 @@ fn run_telemetry_command(command: TelemetryCommands) -> Result<()> {
                     json,
                     full,
                 } => commands::telemetry::show_trace(trace_id, json, full, &mut cx).await,
+                TelemetryCommands::External { limit, json } => {
+                    commands::telemetry::list_external_traces(limit, json, &mut cx).await
+                }
+                TelemetryCommands::ExternalTrace {
+                    trace_id,
+                    json,
+                    full,
+                } => commands::telemetry::show_external_trace(trace_id, json, full, &mut cx).await,
             };
 
             if let Err(e) = result {
