@@ -332,18 +332,20 @@ impl DualAgentOrchestrator {
     }
 
     /// Forward events, but watch for task_complete tool call.
-    /// Returns immediately when task_complete is detected.
+    /// When task_complete is detected, continues draining until Stop
+    /// so the thread finishes and saves its trace.
     async fn forward_events_watching_for_complete(
         mut events: mpsc::UnboundedReceiver<Result<ThreadEvent>>,
         acp_thread: WeakEntity<AcpThread>,
         cx: &mut AsyncApp,
     ) -> Result<LoopResult> {
+        let mut saw_task_complete = false;
+
         while let Some(result) = events.next().await {
             match result {
                 Ok(event) => {
-                    // Check for task_complete tool call BEFORE forwarding
+                    // Check for task_complete tool call
                     if let ThreadEvent::ToolCall(ref tool_call) = event {
-                        // Tool name is stored in meta.tool_name
                         let is_task_complete = tool_call
                             .meta
                             .as_ref()
@@ -353,16 +355,16 @@ impl DualAgentOrchestrator {
                             .unwrap_or(false);
 
                         if is_task_complete {
-                            // Forward this last event so UI shows the tool call
-                            Self::handle_event(event, &acp_thread, cx)?;
-                            // Immediately break - don't wait for the tool to "run"
-                            return Ok(LoopResult::TaskComplete);
+                            saw_task_complete = true;
                         }
                     }
 
-                    // Check for Stop event
+                    // Check for Stop event - this means the thread is done and trace is saved
                     if matches!(event, ThreadEvent::Stop(_)) {
                         Self::handle_event(event, &acp_thread, cx)?;
+                        if saw_task_complete {
+                            return Ok(LoopResult::TaskComplete);
+                        }
                         return Ok(LoopResult::Continue);
                     }
 
@@ -373,6 +375,11 @@ impl DualAgentOrchestrator {
                     return Err(e);
                 }
             }
+        }
+
+        // Stream ended without Stop (shouldn't happen normally)
+        if saw_task_complete {
+            return Ok(LoopResult::TaskComplete);
         }
         Ok(LoopResult::Continue)
     }

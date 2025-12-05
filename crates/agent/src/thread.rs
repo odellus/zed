@@ -1405,21 +1405,22 @@ impl Thread {
                 )
             };
 
-            // Save trace asynchronously (don't block on it)
+            // Save trace - await to ensure it's persisted before returning
             let db_future = cx.update(|cx| ThreadsDatabase::connect(cx))?;
-            cx.background_executor()
-                .spawn(async move {
-                    if let Ok(db) = db_future.await {
-                        if let Err(e) = db.save_trace(trace).await {
-                            log::warn!("Failed to save trace: {:?}", e);
-                        }
-                    }
-                })
-                .detach();
+            if let Ok(db) = db_future.await {
+                if let Err(e) = db.save_trace(trace).await {
+                    log::warn!("Failed to save trace: {:?}", e);
+                }
+            }
 
-            let end_turn = tool_results.is_empty();
+            let mut end_turn = tool_results.is_empty();
             while let Some(tool_result) = tool_results.next().await {
                 log::debug!("Tool finished {:?}", tool_result);
+
+                // task_complete tool signals end of react loop
+                if tool_result.tool_name.as_ref() == "task_complete" {
+                    end_turn = true;
+                }
 
                 event_stream.update_tool_call_fields(
                     &tool_result.tool_use_id,
