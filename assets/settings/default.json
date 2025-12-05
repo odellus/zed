@@ -993,8 +993,7 @@
           "terminal": true,
           "thinking": true,
           "todo_read": true,
-          "todo_write": true,
-          "web_search": true
+          "todo_write": true
         }
       }
     },

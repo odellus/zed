@@ -189,13 +189,9 @@ impl DualAgentOrchestrator {
 
             // === STEP 2: Ask executor to summarize its work ===
             log::debug!("Dual-agent: Requesting executor summary");
-            let executor_summary = Self::request_summary(
-                &executor_thread,
-                EXECUTOR_SUMMARY_PROMPT,
-                &acp_thread,
-                cx,
-            )
-            .await?;
+            let executor_summary =
+                Self::request_summary(&executor_thread, EXECUTOR_SUMMARY_PROMPT, &acp_thread, cx)
+                    .await?;
 
             log::debug!(
                 "Dual-agent: Executor summary length: {}",
@@ -303,7 +299,7 @@ impl DualAgentOrchestrator {
         acp_thread.update(cx, |thread, cx| {
             thread.push_assistant_content_block(
                 acp::ContentBlock::Text(acp::TextContent {
-                    text: format!("📋 *Summary checkpoint*"),
+                    text: format!("\n📋 *Summary checkpoint*\n"),
                     annotations: None,
                     meta: None,
                 }),

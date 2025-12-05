@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AgentTool, ToolCallEventStream};
 
-/// Signal that the executor's work is complete and correct.
-/// Call this tool when you have reviewed the executor's work and determined it satisfies the user's request.
+/// Call when the user's work is complete and correct.
+/// Call this tool when you have reviewed the user's work and determined it satisfies the user's request.
 /// The summary will be shown to the user as the final response.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TaskCompleteToolInput {
@@ -42,9 +42,17 @@ impl AgentTool for TaskCompleteTool {
     fn run(
         self: Arc<Self>,
         input: Self::Input,
-        _event_stream: ToolCallEventStream,
+        event_stream: ToolCallEventStream,
         _cx: &mut App,
     ) -> Task<Result<String>> {
+        // Display the summary in the UI
+        event_stream.update_fields(acp::ToolCallUpdateFields {
+            content: Some(vec![acp::ToolCallContent::Content {
+                content: input.summary.clone().into(),
+            }]),
+            ..Default::default()
+        });
+
         // The orchestrator will intercept this tool call and break the loop.
         // The summary is returned as the tool result.
         Task::ready(Ok(input.summary))
