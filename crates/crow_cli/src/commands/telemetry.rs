@@ -365,6 +365,7 @@ pub async fn show_trace(trace_id: String, json: bool, full: bool, cx: &mut Async
 /// List traces from external agents (Claude Code, Gemini via ACP)
 pub async fn list_external_traces(
     limit: usize,
+    session: Option<String>,
     json: bool,
     cx: &mut AsyncApp,
 ) -> Result<()> {
@@ -375,7 +376,7 @@ pub async fn list_external_traces(
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let traces = database.list_external_traces(limit).await?;
+    let traces = database.list_external_traces(limit, session.as_deref()).await?;
 
     if json {
         let json_output: Vec<_> = traces

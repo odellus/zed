@@ -437,14 +437,19 @@ enum TelemetryCommands {
             These are captured when you use Claude Code or Gemini through Zed's Agent Panel.\n\
             Stored separately from native crow-cli traces in ~/.local/share/crow/telemetry.db",
         after_help = "EXAMPLES:\n    \
-            crow-cli telemetry external              # Last 20 external traces\n    \
-            crow-cli telemetry external -n 50        # Last 50 traces\n    \
-            crow-cli telemetry external -j           # JSON output"
+            crow-cli telemetry external                      # Last 20 external traces\n    \
+            crow-cli telemetry external -n 50                # Last 50 traces\n    \
+            crow-cli telemetry external -s <session-id>      # Filter by session\n    \
+            crow-cli telemetry external -j                   # JSON output"
     )]
     External {
         /// Maximum number of traces to show
         #[arg(long, short = 'n', default_value = "20")]
         limit: usize,
+
+        /// Filter by session ID
+        #[arg(long, short = 's')]
+        session: Option<String>,
 
         /// Output as JSON
         #[arg(long, short = 'j')]
@@ -745,9 +750,11 @@ fn run_telemetry_command(command: TelemetryCommands) -> Result<()> {
                     json,
                     full,
                 } => commands::telemetry::show_trace(trace_id, json, full, &mut cx).await,
-                TelemetryCommands::External { limit, json } => {
-                    commands::telemetry::list_external_traces(limit, json, &mut cx).await
-                }
+                TelemetryCommands::External {
+                    limit,
+                    session,
+                    json,
+                } => commands::telemetry::list_external_traces(limit, session, json, &mut cx).await,
                 TelemetryCommands::ExternalTrace {
                     trace_id,
                     json,

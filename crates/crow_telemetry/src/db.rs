@@ -207,17 +207,24 @@ impl CrowTelemetryDb {
     }
 
     /// List recent traces from external agents (Claude Code, Gemini, etc.)
-    pub fn list_external_traces(&self, limit: usize) -> Task<Result<Vec<Trace>>> {
+    pub fn list_external_traces(&self, limit: usize, session_id: Option<&str>) -> Task<Result<Vec<Trace>>> {
         let connection = self.connection.clone();
+        let session_id = session_id.map(|s| s.to_string());
 
         self.executor.spawn(async move {
             let connection = connection.lock();
 
-            // Query for all external agent roles
-            let query = format!(
-                "SELECT data FROM traces WHERE agent_role IN ('external_claude_code', 'external_gemini', 'external_custom') ORDER BY started_at DESC LIMIT {}",
-                limit
-            );
+            // Query for all external agent roles, optionally filtered by session
+            let query = match &session_id {
+                Some(sid) => format!(
+                    "SELECT data FROM traces WHERE agent_role IN ('external_claude_code', 'external_gemini', 'external_custom') AND session_id = '{}' ORDER BY started_at DESC LIMIT {}",
+                    sid, limit
+                ),
+                None => format!(
+                    "SELECT data FROM traces WHERE agent_role IN ('external_claude_code', 'external_gemini', 'external_custom') ORDER BY started_at DESC LIMIT {}",
+                    limit
+                ),
+            };
 
             let mut select = connection.select_bound::<(), String>(&query)?;
 

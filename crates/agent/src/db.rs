@@ -846,8 +846,9 @@ impl ThreadsDatabase {
     }
 
     /// List recent traces from external agents (Claude Code, Gemini, etc.)
-    pub fn list_external_traces(&self, limit: usize) -> Task<Result<Vec<Trace>>> {
+    pub fn list_external_traces(&self, limit: usize, session_id: Option<&str>) -> Task<Result<Vec<Trace>>> {
         let connection = self.connection.clone();
+        let session_id = session_id.map(|s| s.to_string());
 
         self.executor.spawn(async move {
             let connection = connection.lock();
@@ -865,6 +866,12 @@ impl ThreadsDatabase {
             for data in rows {
                 if let Ok(trace) = serde_json::from_str::<Trace>(&data) {
                     if trace.agent_role.is_external() {
+                        // Filter by session if provided
+                        if let Some(ref sid) = session_id {
+                            if trace.session_id != *sid {
+                                continue;
+                            }
+                        }
                         traces.push(trace);
                         if traces.len() >= limit {
                             break;

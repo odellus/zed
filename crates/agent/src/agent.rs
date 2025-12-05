@@ -506,6 +506,16 @@ impl NativeAgent {
 
         let discriminator_session_id = discriminator_thread.read(cx).id().clone();
 
+        // Add default tools to discriminator (filtered by discriminator profile settings)
+        discriminator_thread.update(cx, |thread, cx| {
+            thread.add_default_tools(
+                Rc::new(AcpThreadEnvironment {
+                    acp_thread: acp_thread.clone(),
+                }) as _,
+                cx,
+            )
+        });
+
         // Link the sessions in the shared TodoStore so they see the same todos
         executor_todo_store.share_sessions(
             &executor_session_id.0,
