@@ -47,12 +47,12 @@ pub const EXECUTOR_SUMMARY_PROMPT: &str = r#"Please provide a concise summary of
 Do NOT call any tools. Reply directly with the summary in markdown format."#;
 
 /// Prompt injected into discriminator session after it provides feedback.
-/// Asks discriminator to summarize its feedback concisely for executor.
-pub const DISCRIMINATOR_FEEDBACK_PROMPT: &str = r#"Please provide a concise summary of your feedback on the executor's work. Include:
+/// Asks discriminator to summarize its feedback concisely for the user.
+pub const DISCRIMINATOR_FEEDBACK_PROMPT: &str = r#"Please provide a concise summary of your feedback on the user's work. Include:
 
 1. **Assessment**: Is the work complete, incomplete, or incorrect?
 2. **Issues Found**: Specific problems that need to be addressed
-3. **Suggestions**: Concrete steps the executor should take to fix the issues
+3. **Suggestions**: Concrete steps the user should take to fix the issues
 4. **Priority**: Which issues are most critical to address first
 
 Do NOT call any tools. Reply directly with the feedback summary in markdown format."#;

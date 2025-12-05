@@ -188,11 +188,29 @@ impl AgentTool for TodoWriteTool {
     }
 }
 
+/// Action for the todo_read tool.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoReadAction {
+    /// Show the current todo list
+    Show,
+}
+
+impl Default for TodoReadAction {
+    fn default() -> Self {
+        Self::Show
+    }
+}
+
 /// Input for the todo_read tool.
 ///
 /// Retrieves the current task list state to track pending or completed items.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-pub struct TodoReadInput {}
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+pub struct TodoReadInput {
+    /// Action to perform (currently only "show" is supported)
+    #[serde(default)]
+    pub action: TodoReadAction,
+}
 
 pub struct TodoReadTool {
     store: TodoStore,
