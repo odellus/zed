@@ -38,6 +38,7 @@ fn provider_to_env_var(provider: &str) -> Option<&'static str> {
         "mistral" => Some("MISTRAL_API_KEY"),
         "groq" => Some("GROQ_API_KEY"),
         "xai" | "x-ai" => Some("XAI_API_KEY"),
+        "lm-studio2" => Some("LM_STUDIO_2_API_KEY"),
         _ => None,
     }
 }
