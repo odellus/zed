@@ -438,6 +438,9 @@ impl DualAgentOrchestrator {
             ThreadEvent::ToolCallUpdate(update) => {
                 acp_thread.update(cx, |thread, cx| thread.update_tool_call(update, cx))??;
             }
+            ThreadEvent::Plan(plan) => {
+                acp_thread.update(cx, |thread, cx| thread.update_plan(plan, cx))?;
+            }
             ThreadEvent::Retry(status) => {
                 acp_thread.update(cx, |thread, cx| thread.update_retry_status(status, cx))?;
             }

@@ -546,6 +546,7 @@ pub enum ThreadEvent {
     ToolCall(acp::ToolCall),
     ToolCallUpdate(acp_thread::ToolCallUpdate),
     ToolCallAuthorization(ToolCallAuthorization),
+    Plan(acp::Plan),
     Retry(acp_thread::RetryStatus),
     Stop(acp::StopReason),
 }
@@ -2660,6 +2661,13 @@ impl ToolCallEventStream {
                 }
                 .into(),
             )))
+            .ok();
+    }
+
+    pub fn update_plan(&self, plan: acp::Plan) {
+        self.stream
+            .0
+            .unbounded_send(Ok(ThreadEvent::Plan(plan)))
             .ok();
     }
 
