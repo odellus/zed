@@ -1,6 +1,8 @@
 use agent_client_protocol as acp;
 use anyhow::{Context as _, Result};
 use colored::Colorize;
+use futures::channel::oneshot;
+use futures::future::FutureExt;
 use gpui::AsyncApp;
 use std::io::{self, Write};
 use std::time::Instant;
@@ -109,12 +111,16 @@ pub async fn run_chat_command(
     // the message goes through the DualAgentOrchestrator
     if auto_mode {
         if output_mode == OutputMode::Verbose {
-            eprintln!("{}", "🔄 Enabling auto mode (dual-agent)...".yellow().bold());
+            eprintln!(
+                "{}",
+                "🔄 Enabling auto mode (dual-agent)...".yellow().bold()
+            );
         }
 
         cx.update(|cx| {
-            crow.agent
-                .update(cx, |agent, cx| agent.enable_dual_agent_mode(session_id.clone(), cx))
+            crow.agent.update(cx, |agent, cx| {
+                agent.enable_dual_agent_mode(session_id.clone(), cx)
+            })
         })??;
 
         if output_mode == OutputMode::Verbose {
@@ -136,8 +142,40 @@ pub async fn run_chat_command(
 
     let send_future = acp_thread.update(cx, |thread, cx| thread.send(prompt_blocks, cx))?;
 
-    // Wait for completion
-    send_future.await?;
+    // Set up Ctrl+C handler for graceful cancellation
+    let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
+    let cancel_tx = std::sync::Mutex::new(Some(cancel_tx));
+
+    ctrlc::set_handler(move || {
+        if let Some(tx) = cancel_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
+    })
+    .ok();
+
+    // Race between completion and Ctrl+C
+    let mut send_future = send_future.fuse();
+    let mut cancel_rx = cancel_rx.fuse();
+
+    let result = futures::select! {
+        result = send_future => result,
+        _ = cancel_rx => {
+            // User pressed Ctrl+C - cancel the thread
+            if output_mode == OutputMode::Verbose {
+                eprintln!("\n{}", "Cancelling...".yellow().bold());
+            }
+            cx.update(|cx| acp_thread.update(cx, |thread, cx| thread.cancel(cx)))?.await;
+            if output_mode == OutputMode::Verbose {
+                eprintln!("{}", "Cancelled by user.".yellow());
+            }
+            Ok(())
+        }
+    };
+
+    // Clear the Ctrl+C handler
+    let _ = ctrlc::set_handler(|| {});
+
+    result?;
 
     let elapsed = start_time.elapsed();
     log::info!("Agent finished processing in {:.1}s", elapsed.as_secs_f64());

@@ -22,6 +22,7 @@ pub use tools::*;
 
 use acp_thread::{AcpThread, AgentModelSelector};
 use agent_client_protocol as acp;
+use agent_settings::{AgentProfileId, builtin_profiles};
 use anyhow::{Context as _, Result, anyhow};
 use chrono::{DateTime, Utc};
 use collections::{HashSet, IndexMap};
@@ -38,7 +39,6 @@ use prompt_store::{
     ProjectContext, PromptStore, RulesFileContext, UserRulesContext, WorktreeContext,
 };
 use serde::{Deserialize, Serialize};
-use agent_settings::{AgentProfileId, builtin_profiles};
 use settings::{LanguageModelSelection, update_settings_file};
 use std::any::Any;
 use std::collections::HashMap;
@@ -436,8 +436,7 @@ impl NativeAgent {
             thread.set_todo_store(executor_todo_store.clone());
 
             // Set the discriminator profile (uses discriminator_prompt.hbs and has task_complete enabled)
-            let discriminator_profile_id =
-                AgentProfileId(builtin_profiles::DISCRIMINATOR.into());
+            let discriminator_profile_id = AgentProfileId(builtin_profiles::DISCRIMINATOR.into());
             thread.set_profile(discriminator_profile_id, cx);
 
             // Add the task_complete tool to discriminator
@@ -517,10 +516,7 @@ impl NativeAgent {
         });
 
         // Link the sessions in the shared TodoStore so they see the same todos
-        executor_todo_store.share_sessions(
-            &executor_session_id.0,
-            &discriminator_session_id.0,
-        );
+        executor_todo_store.share_sessions(&executor_session_id.0, &discriminator_session_id.0);
 
         // Register discriminator session (shares the same AcpThread)
         let subscriptions = vec![cx.observe(&discriminator_thread, move |this, thread, cx| {
@@ -979,11 +975,7 @@ impl NativeAgentConnection {
         self.0.update(cx, |this, cx| this.load_thread(id, cx))
     }
 
-    pub fn open_thread(
-        &self,
-        id: acp::SessionId,
-        cx: &mut App,
-    ) -> Task<Result<Entity<AcpThread>>> {
+    pub fn open_thread(&self, id: acp::SessionId, cx: &mut App) -> Task<Result<Entity<AcpThread>>> {
         self.0.update(cx, |this, cx| this.open_thread(id, cx))
     }
 
@@ -1098,9 +1090,7 @@ impl NativeAgentConnection {
                                 })??;
                             }
                             ThreadEvent::Plan(plan) => {
-                                acp_thread.update(cx, |thread, cx| {
-                                    thread.update_plan(plan, cx)
-                                })?;
+                                acp_thread.update(cx, |thread, cx| thread.update_plan(plan, cx))?;
                             }
                             ThreadEvent::Retry(status) => {
                                 acp_thread.update(cx, |thread, cx| {
@@ -1137,11 +1127,7 @@ impl NativeAgentConnection {
     }
 
     /// Enable dual-agent mode for a session.
-    pub fn enable_dual_agent_mode(
-        &self,
-        session_id: acp::SessionId,
-        cx: &mut App,
-    ) -> Result<()> {
+    pub fn enable_dual_agent_mode(&self, session_id: acp::SessionId, cx: &mut App) -> Result<()> {
         self.0
             .update(cx, |agent, cx| agent.enable_dual_agent_mode(session_id, cx))
     }
@@ -1153,11 +1139,7 @@ impl NativeAgentConnection {
     }
 
     /// Toggle dual-agent mode for a session.
-    pub fn toggle_dual_agent_mode(
-        &self,
-        session_id: acp::SessionId,
-        cx: &mut App,
-    ) -> Result<bool> {
+    pub fn toggle_dual_agent_mode(&self, session_id: acp::SessionId, cx: &mut App) -> Result<bool> {
         if self.is_dual_agent_mode(&session_id, cx) {
             self.disable_dual_agent_mode(&session_id, cx)?;
             Ok(false)
@@ -1392,10 +1374,36 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
     }
 
     fn cancel(&self, session_id: &acp::SessionId, cx: &mut App) {
-        log::info!("Cancelling on session: {}", session_id);
+        log::info!("Cancelling session: {}", session_id);
         self.0.update(cx, |agent, cx| {
-            if let Some(agent) = agent.sessions.get(session_id) {
-                agent.thread.update(cx, |thread, cx| thread.cancel(cx));
+            // Cancel the requested session
+            if let Some(session) = agent.sessions.get(session_id) {
+                session.thread.update(cx, |thread, cx| thread.cancel(cx));
+            }
+
+            // If this session is part of a dual-agent pair, also cancel the sibling
+            // First try direct lookup (session_id is executor)
+            let dual_state = agent.dual_sessions.get(session_id).cloned().or_else(|| {
+                // Reverse lookup: session_id might be the discriminator
+                agent
+                    .dual_sessions
+                    .values()
+                    .find(|state| &state.discriminator_session_id == session_id)
+                    .cloned()
+            });
+
+            if let Some(dual_state) = dual_state {
+                // Cancel both executor and discriminator
+                for sibling_id in [&dual_state.executor_session_id, &dual_state.discriminator_session_id] {
+                    if sibling_id != session_id {
+                        if let Some(sibling_session) = agent.sessions.get(sibling_id) {
+                            log::info!("Also cancelling paired session: {}", sibling_id);
+                            sibling_session
+                                .thread
+                                .update(cx, |thread, cx| thread.cancel(cx));
+                        }
+                    }
+                }
             }
         });
     }

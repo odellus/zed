@@ -53,3 +53,4 @@ rustyline = "14"
 serde.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
+ctrlc = "3.4"

@@ -184,7 +184,15 @@ impl DualAgentOrchestrator {
             })??;
 
             // Stream executor's react loop to UI
-            Self::forward_events_to_acp_thread(executor_events, acp_thread.clone(), cx).await?;
+            let executor_result =
+                Self::forward_events_to_acp_thread(executor_events, acp_thread.clone(), cx).await?;
+            if matches!(executor_result, LoopResult::Cancelled) {
+                log::debug!("Dual-agent: Executor was cancelled, ending loop");
+                return Ok(acp::PromptResponse {
+                    stop_reason: acp::StopReason::Cancelled,
+                    meta: None,
+                });
+            }
             log::debug!("Dual-agent: Executor react loop complete");
 
             // === STEP 2: Ask executor to summarize its work ===
@@ -222,6 +230,13 @@ impl DualAgentOrchestrator {
                     log::debug!("Dual-agent: task_complete called, ending loop");
                     return Ok(acp::PromptResponse {
                         stop_reason: acp::StopReason::EndTurn,
+                        meta: None,
+                    });
+                }
+                LoopResult::Cancelled => {
+                    log::debug!("Dual-agent: Discriminator was cancelled, ending loop");
+                    return Ok(acp::PromptResponse {
+                        stop_reason: acp::StopReason::Cancelled,
                         meta: None,
                     });
                 }
@@ -312,15 +327,26 @@ impl DualAgentOrchestrator {
     }
 
     /// Forward events from a Thread to the AcpThread.
+    /// Returns Cancelled if the thread was cancelled.
     async fn forward_events_to_acp_thread(
         mut events: mpsc::UnboundedReceiver<Result<ThreadEvent>>,
         acp_thread: WeakEntity<AcpThread>,
         cx: &mut AsyncApp,
-    ) -> Result<()> {
+    ) -> Result<LoopResult> {
         while let Some(result) = events.next().await {
             match result {
                 Ok(event) => {
+                    // Check for cancellation
+                    let is_cancelled =
+                        matches!(&event, ThreadEvent::Stop(acp::StopReason::Cancelled));
+                    let is_stop = matches!(&event, ThreadEvent::Stop(_));
                     Self::handle_event(event, &acp_thread, cx)?;
+                    if is_cancelled {
+                        return Ok(LoopResult::Cancelled);
+                    }
+                    if is_stop {
+                        return Ok(LoopResult::Continue);
+                    }
                 }
                 Err(e) => {
                     log::error!("Error in thread event stream: {:?}", e);
@@ -328,7 +354,7 @@ impl DualAgentOrchestrator {
                 }
             }
         }
-        Ok(())
+        Ok(LoopResult::Continue)
     }
 
     /// Forward events, but watch for task_complete tool call.
@@ -360,15 +386,19 @@ impl DualAgentOrchestrator {
                     }
 
                     // Check for Stop event - this means the thread is done and trace is saved
-                    if matches!(event, ThreadEvent::Stop(_)) {
-                        Self::handle_event(event, &acp_thread, cx)?;
+                    let is_cancelled =
+                        matches!(&event, ThreadEvent::Stop(acp::StopReason::Cancelled));
+                    let is_stop = matches!(&event, ThreadEvent::Stop(_));
+                    Self::handle_event(event, &acp_thread, cx)?;
+                    if is_cancelled {
+                        return Ok(LoopResult::Cancelled);
+                    }
+                    if is_stop {
                         if saw_task_complete {
                             return Ok(LoopResult::TaskComplete);
                         }
                         return Ok(LoopResult::Continue);
                     }
-
-                    Self::handle_event(event, &acp_thread, cx)?;
                 }
                 Err(e) => {
                     log::error!("Error in discriminator event stream: {:?}", e);
@@ -455,4 +485,5 @@ impl DualAgentOrchestrator {
 enum LoopResult {
     TaskComplete,
     Continue,
+    Cancelled,
 }

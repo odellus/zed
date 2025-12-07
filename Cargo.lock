@@ -4361,6 +4361,7 @@ dependencies = [
  "clock",
  "colored",
  "crow_telemetry",
+ "ctrlc",
  "db",
  "dirs 4.0.0",
  "env_logger 0.11.8",
