@@ -257,6 +257,8 @@ actions!(
         ToggleBottomDock,
         /// Toggles centered layout mode.
         ToggleCenteredLayout,
+        /// Toggles agent-centered layout mode where the agent panel is in the center and editor is on the right.
+        ToggleAgentCenteredLayout,
         /// Toggles edit prediction feature globally for all files.
         ToggleEditPrediction,
         /// Toggles the left dock.
@@ -1161,6 +1163,8 @@ pub struct Workspace {
     pane_history_timestamp: Arc<AtomicUsize>,
     bounds: Bounds<Pixels>,
     pub centered_layout: bool,
+    pub agent_centered_layout: bool,
+    agent_centered_editor_width: Pixels,
     bounds_save_task_queued: Option<Task<()>>,
     on_prompt_for_new_path: Option<PromptForNewPath>,
     on_prompt_for_open_path: Option<PromptForOpenPath>,
@@ -1504,6 +1508,8 @@ impl Workspace {
             // This data will be incorrect, but it will be overwritten by the time it needs to be used.
             bounds: Default::default(),
             centered_layout: false,
+            agent_centered_layout: false,
+            agent_centered_editor_width: px(500.),
             bounds_save_task_queued: None,
             on_prompt_for_new_path: None,
             on_prompt_for_open_path: None,
@@ -5950,6 +5956,7 @@ impl Workspace {
                 },
             ))
             .on_action(cx.listener(Workspace::toggle_centered_layout))
+            .on_action(cx.listener(Workspace::toggle_agent_centered_layout))
             .on_action(cx.listener(Workspace::cancel))
     }
 
@@ -6052,6 +6059,23 @@ impl Workspace {
             cx.background_spawn(DB.set_centered_layout(database_id, self.centered_layout))
                 .detach_and_log_err(cx);
         }
+        cx.notify();
+    }
+
+    pub fn toggle_agent_centered_layout(
+        &mut self,
+        _: &ToggleAgentCenteredLayout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.agent_centered_layout = !self.agent_centered_layout;
+
+        if self.agent_centered_layout {
+            self.right_dock.update(cx, |dock, cx| {
+                dock.set_open(true, window, cx);
+            });
+        }
+
         cx.notify();
     }
 
@@ -6489,6 +6513,15 @@ impl Render for DraggedDock {
     }
 }
 
+#[derive(Clone)]
+struct DraggedAgentCenteredDivider;
+
+impl Render for DraggedAgentCenteredDivider {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         static FIRST_PAINT: AtomicBool = AtomicBool::new(true);
@@ -6688,6 +6721,88 @@ impl Render for Workspace {
                                     ))
                                 })
                                 .child({
+                                    if self.agent_centered_layout {
+                                        // Agent-centered layout: Agent panel on left, editor+file explorer+terminal on right
+                                        let agent_panel_view = self.right_dock.read(cx).active_panel().map(|p| p.to_any());
+                                        let editor_width = self.agent_centered_editor_width;
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .size_full()
+                                            .on_drag_move(cx.listener(
+                                                |workspace, e: &DragMoveEvent<DraggedAgentCenteredDivider>, _window, cx| {
+                                                    let new_width = workspace.bounds.right() - e.event.position.x;
+                                                    workspace.agent_centered_editor_width = new_width.max(px(200.)).min(workspace.bounds.size.width - px(300.));
+                                                    cx.notify();
+                                                },
+                                            ))
+                                            // Left side: Agent panel (from right dock) takes center stage
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_1()
+                                                    .size_full()
+                                                    .min_w_0()
+                                                    .overflow_hidden()
+                                                    .bg(cx.theme().colors().panel_background)
+                                                    .when_some(agent_panel_view, |this, panel| {
+                                                        this.child(panel)
+                                                    })
+                                            )
+                                            // Resize handle
+                                            .child(
+                                                div()
+                                                    .id("agent-centered-resize-handle")
+                                                    .w(RESIZE_HANDLE_SIZE)
+                                                    .h_full()
+                                                    .cursor_col_resize()
+                                                    .on_drag(DraggedAgentCenteredDivider, |_, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        cx.new(|_| DraggedAgentCenteredDivider)
+                                                    })
+                                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                        cx.stop_propagation();
+                                                    })
+                                            )
+                                            // Right side: Editor + Terminal grouped together
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .w(editor_width)
+                                                    .h_full()
+                                                    .border_l_1()
+                                                    .border_color(cx.theme().colors().border)
+                                                    // Editor panes
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_col()
+                                                            .flex_1()
+                                                            .overflow_hidden()
+                                                            .child(self.center.render(
+                                                                self.zoomed.as_ref(),
+                                                                &PaneRenderContext {
+                                                                    follower_states: &self.follower_states,
+                                                                    active_call: self.active_call(),
+                                                                    active_pane: &self.active_pane,
+                                                                    app_state: &self.app_state,
+                                                                    project: &self.project,
+                                                                    workspace: &self.weak_self,
+                                                                },
+                                                                window,
+                                                                cx,
+                                                            ))
+                                                    )
+                                                    // Terminal at bottom
+                                                    .children(self.render_dock(
+                                                        DockPosition::Bottom,
+                                                        &self.bottom_dock,
+                                                        window,
+                                                        cx,
+                                                    ))
+                                            )
+                                    } else {
                                     match bottom_dock_layout {
                                         BottomDockLayout::Full => div()
                                             .flex()
@@ -6927,6 +7042,7 @@ impl Render for Workspace {
                                                 window,
                                                 cx,
                                             )),
+                                    }
                                     }
                                 })
                                 .children(self.zoomed.as_ref().and_then(|view| {
