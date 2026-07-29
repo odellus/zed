@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use acp_thread::{AcpThread, AcpThreadEvent, MentionUri, ThreadStatus, line_range_suffix};
+use acp_thread::{AcpThread, AcpThreadEvent, MentionUri, line_range_suffix};
 use agent::{ContextServerRegistry, SharedThread, ThreadStore};
 use agent_client_protocol::schema::v1 as acp;
 use agent_servers::AgentServer;
@@ -1161,6 +1161,9 @@ pub struct AgentPanel {
     thread_store: Entity<ThreadStore>,
     connection_store: Entity<AgentConnectionStore>,
     context_server_registry: Entity<ContextServerRegistry>,
+    /// Central ownership of live threads. The panel is a *presentation* of
+    /// this store, not the owner. Center-pane items will also present it.
+    threads: Entity<crate::workspace_agent_threads::WorkspaceAgentThreads>,
     focus_handle: FocusHandle,
     base_view: BaseView,
     last_created_entry_kind: AgentPanelEntryKind,
@@ -1525,6 +1528,25 @@ impl AgentPanel {
         });
 
         let connection_store = cx.new(|cx| AgentConnectionStore::new(project.clone(), cx));
+
+        let threads = {
+            let workspace = workspace.clone();
+            let project = project.clone();
+            let fs = fs.clone();
+            let thread_store = thread_store.clone();
+            let connection_store = connection_store.clone();
+            cx.new(|cx| {
+                crate::workspace_agent_threads::WorkspaceAgentThreads::new(
+                    workspace,
+                    project,
+                    fs,
+                    thread_store,
+                    connection_store,
+                    cx,
+                )
+            })
+        };
+
         let _project_subscription =
             cx.subscribe(&project, |this, _project, event, cx| match event {
                 project::Event::WorktreeAdded(_)
@@ -1564,6 +1586,7 @@ impl AgentPanel {
             fs: fs.clone(),
             language_registry,
             connection_store,
+            threads,
             focus_handle: cx.focus_handle(),
             context_server_registry,
             draft_thread: None,
@@ -1645,6 +1668,10 @@ impl AgentPanel {
 
     pub fn connection_store(&self) -> &Entity<AgentConnectionStore> {
         &self.connection_store
+    }
+
+    pub fn threads(&self) -> &Entity<crate::workspace_agent_threads::WorkspaceAgentThreads> {
+        &self.threads
     }
 
     pub fn selected_agent(&self, cx: &App) -> Agent {
@@ -1745,6 +1772,22 @@ impl AgentPanel {
         cx.notify();
     }
 
+    /// Detach the active thread from the panel WITHOUT retaining it.
+    /// Used when a thread moves to another presentation (center pane).
+    pub fn detach_active_thread(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let old_view = std::mem::replace(&mut self.base_view, BaseView::Uninitialized);
+        // Remove from panel cache if it was retained.
+        if let BaseView::AgentThread { conversation_view } = &old_view {
+            let thread_id = conversation_view.read(cx).thread_id;
+            self.retained_threads.remove(&thread_id);
+        }
+        self.refresh_base_view_subscriptions(window, cx);
+        self.activate_draft(false, AgentThreadSource::AgentPanel, window, cx);
+        self.serialize(cx);
+        cx.emit(AgentPanelEvent::ActiveViewChanged);
+        cx.notify();
+    }
+
     pub fn new_thread(&mut self, _action: &NewThread, window: &mut Window, cx: &mut Context<Self>) {
         if !self.has_open_project(cx) {
             return;
@@ -1806,6 +1849,9 @@ impl AgentPanel {
                 let draft_id = draft.read(cx).thread_id;
                 self.draft_thread = None;
                 self._draft_editor_observation = None;
+                self.threads.update(cx, |threads, cx| {
+                    threads.retain_thread(draft.clone(), cx);
+                });
                 self.retained_threads.insert(draft_id, draft);
             } else if *draft.read(cx).agent_key() != self.selected_agent {
                 let old_draft_id = draft.read(cx).thread_id;
@@ -1814,6 +1860,9 @@ impl AgentPanel {
                 });
                 self.draft_thread = None;
                 self._draft_editor_observation = None;
+                self.threads.update(cx, |threads, _| {
+                    threads.take_draft();
+                });
             }
         }
         self.activate_draft(focus, source, window, cx);
@@ -1869,7 +1918,10 @@ impl AgentPanel {
         };
         if let Some(conversation_view) = active_matching {
             self.observe_draft_editor(&conversation_view, cx);
-            self.draft_thread = Some(conversation_view);
+            self.draft_thread = Some(conversation_view.clone());
+            self.threads.update(cx, |threads, cx| {
+                threads.set_draft(conversation_view, cx);
+            });
             return;
         }
 
@@ -1904,7 +1956,10 @@ impl AgentPanel {
             cx,
         );
         self.observe_draft_editor(&thread.conversation_view, cx);
-        self.draft_thread = Some(thread.conversation_view);
+        self.draft_thread = Some(thread.conversation_view.clone());
+        self.threads.update(cx, |threads, cx| {
+            threads.set_draft(thread.conversation_view.clone(), cx);
+        });
     }
 
     pub fn new_external_agent_thread(
@@ -3010,6 +3065,9 @@ impl AgentPanel {
 
             self.draft_thread = None;
             self._draft_editor_observation = None;
+            self.threads.update(cx, |threads, _| {
+                threads.take_draft();
+            });
         }
 
         let thread = self.create_agent_thread_with_server(
@@ -3026,6 +3084,9 @@ impl AgentPanel {
         );
 
         self.draft_thread = Some(thread.conversation_view.clone());
+        self.threads.update(cx, |threads, cx| {
+            threads.set_draft(thread.conversation_view.clone(), cx);
+        });
         self.observe_draft_editor(&thread.conversation_view, cx);
         thread.conversation_view
     }
@@ -3049,6 +3110,9 @@ impl AgentPanel {
                     {
                         this.draft_thread = None;
                         this._draft_editor_observation = None;
+                        this.threads.update(cx, |threads, _| {
+                            threads.take_draft();
+                        });
                         this.serialize(cx);
                         return;
                     }
@@ -3160,6 +3224,9 @@ impl AgentPanel {
         }
 
         self.retained_threads.remove(&thread_id);
+        self.threads.update(cx, |threads, _| {
+            threads.take_thread(&thread_id);
+        });
         self.set_ephemeral_draft(conversation_view, cx);
         true
     }
@@ -3183,6 +3250,9 @@ impl AgentPanel {
             self._draft_editor_observation = None;
         }
         self.draft_thread = Some(conversation_view.clone());
+        self.threads.update(cx, |threads, cx| {
+            threads.set_draft(conversation_view.clone(), cx);
+        });
         self.observe_draft_editor(&conversation_view, cx);
         self.serialize(cx);
     }
@@ -3226,6 +3296,9 @@ impl AgentPanel {
             self.set_selected_agent_and_persist(original, cx);
         }
         let thread_id = thread.conversation_view.read(cx).thread_id;
+        self.threads.update(cx, |threads, cx| {
+            threads.retain_thread(thread.conversation_view.clone(), cx);
+        });
         self.retained_threads
             .insert(thread_id, thread.conversation_view);
         thread_id
@@ -3239,6 +3312,9 @@ impl AgentPanel {
         cx: &mut Context<Self>,
     ) {
         let conversation_view = if let Some(view) = self.retained_threads.remove(&id) {
+            self.threads.update(cx, |threads, _| {
+                threads.take_thread(&id);
+            });
             self.try_make_empty_draft_ephemeral(view.clone(), cx);
             view
         } else if let Some(draft) = &self.draft_thread {
@@ -3290,10 +3366,11 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.retained_threads.remove(&id);
-        ThreadMetadataStore::global(cx).update(cx, |store, cx| {
-            store.delete(id, cx);
+        self.threads.update(cx, |threads, cx| {
+            threads.remove_thread(id, cx);
         });
+        // Sync panel-local cache.
+        self.retained_threads.remove(&id);
 
         if self
             .draft_thread
@@ -4150,55 +4227,31 @@ impl AgentPanel {
             return;
         };
 
-        if self
+        let was_draft = self
             .draft_thread
             .as_ref()
-            .is_some_and(|d| d.entity_id() == conversation_view.entity_id())
-        {
-            if self.draft_has_content(&conversation_view, cx) {
-                let thread_id = conversation_view.read(cx).thread_id;
-                self.draft_thread = None;
-                self._draft_editor_observation = None;
-                self.retained_threads.insert(thread_id, conversation_view);
-                self.cleanup_retained_threads(cx);
+            .is_some_and(|d| d.entity_id() == conversation_view.entity_id());
+
+        self.threads.update(cx, |threads, cx| {
+            threads.retain_thread(conversation_view.clone(), cx);
+        });
+
+        // Sync panel-local cache (transitional — removed once sidebar
+        // reads from the store directly).
+        if was_draft {
+            if self.draft_thread.is_some() {
+                let draft_id = self.draft_thread.as_ref().unwrap().read(cx).thread_id;
+                if self.threads.read(cx).live_threads().contains_key(&draft_id) {
+                    self.draft_thread = None;
+                    self._draft_editor_observation = None;
+                    self.retained_threads.insert(draft_id, conversation_view);
+                }
             }
-            return;
-        }
-
-        let thread_id = conversation_view.read(cx).thread_id;
-
-        if self.retained_threads.contains_key(&thread_id) {
-            return;
-        }
-
-        self.retained_threads.insert(thread_id, conversation_view);
-        self.cleanup_retained_threads(cx);
-    }
-
-    fn cleanup_retained_threads(&mut self, cx: &App) {
-        let mut potential_removals = self
-            .retained_threads
-            .iter()
-            .filter(|(_id, view)| {
-                let Some(thread_view) = view.read(cx).root_thread_view() else {
-                    return true;
-                };
-                let thread = thread_view.read(cx).thread.read(cx);
-                thread.connection().supports_load_session() && thread.status() == ThreadStatus::Idle
-            })
-            .collect::<Vec<_>>();
-
-        let max_idle = MaxIdleRetainedThreads::global(cx);
-
-        potential_removals.sort_unstable_by_key(|(_, view)| view.read(cx).updated_at(cx));
-        let n = potential_removals.len().saturating_sub(max_idle);
-        let to_remove = potential_removals
-            .into_iter()
-            .map(|(id, _)| *id)
-            .take(n)
-            .collect::<Vec<_>>();
-        for id in to_remove {
-            self.retained_threads.remove(&id);
+        } else {
+            let thread_id = conversation_view.read(cx).thread_id;
+            if !self.retained_threads.contains_key(&thread_id) {
+                self.retained_threads.insert(thread_id, conversation_view);
+            }
         }
     }
 
@@ -4410,6 +4463,9 @@ impl AgentPanel {
             return;
         }
         if let Some(conversation_view) = self.retained_threads.remove(&thread_id) {
+            self.threads.update(cx, |threads, _| {
+                threads.take_thread(&thread_id);
+            });
             self.try_make_empty_draft_ephemeral(conversation_view.clone(), cx);
             self.set_base_view(
                 BaseView::AgentThread { conversation_view },
@@ -4529,35 +4585,17 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AgentThread {
-        let thread_id = resume_thread_id.unwrap_or_else(ThreadId::new);
-        let workspace = self.workspace.clone();
-        let project = self.project.clone();
-
         self.set_selected_agent_and_persist(agent.clone(), cx);
 
-        let server = server_override
-            .unwrap_or_else(|| agent.server(self.fs.clone(), self.thread_store.clone()));
-        let thread_store = server
-            .clone()
-            .downcast::<agent::NativeAgentServer>()
-            .is_some()
-            .then(|| self.thread_store.clone());
-
-        let connection_store = self.connection_store.clone();
-
-        let conversation_view = cx.new(|cx| {
-            crate::ConversationView::new(
-                server,
-                connection_store,
+        let conversation_view = self.threads.update(cx, |threads, cx| {
+            threads.create_thread(
                 agent,
+                server_override,
+                resume_thread_id,
                 resume_session_id,
-                Some(thread_id),
                 work_dirs,
                 title,
                 initial_content,
-                workspace.clone(),
-                project,
-                thread_store,
                 source,
                 window,
                 cx,
@@ -4588,9 +4626,6 @@ impl AgentPanel {
         self.ensure_sibling_host_installed(&conversation_view, window, cx);
 
         if let Some(model) = model_override {
-            // The native thread is constructed asynchronously after the
-            // connection establishes. Wait for the first `RootThreadUpdated`
-            // event that yields a native thread, then apply the override once.
             let applied = Cell::new(false);
             cx.subscribe(
                 &conversation_view,
@@ -5282,6 +5317,9 @@ impl AgentPanel {
                 cx,
             );
             self.draft_thread = Some(thread.conversation_view.clone());
+            self.threads.update(cx, |threads, cx| {
+                threads.set_draft(thread.conversation_view.clone(), cx);
+            });
             self.observe_draft_editor(&thread.conversation_view, cx);
             self.set_base_view(thread.into(), false, window, cx);
             true

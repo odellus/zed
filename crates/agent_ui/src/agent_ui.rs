@@ -4,6 +4,7 @@ mod agent_diff;
 mod agent_model_selector;
 mod agent_panel;
 mod agent_registry_ui;
+pub mod agent_thread_item;
 mod buffer_codegen;
 mod completion_provider;
 mod config_options;
@@ -36,6 +37,7 @@ pub mod thread_worktree_archive;
 pub mod threads_archive_view;
 mod ui;
 mod unicode_confusables;
+pub mod workspace_agent_threads;
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -48,8 +50,8 @@ use editor::{Editor, SelectionEffects, scroll::Autoscroll};
 use feature_flags::FeatureFlagAppExt as _;
 use fs::Fs;
 use gpui::{
-    Action, App, Context, Entity, ImageSource, ReadGlobal as _, Resource, SharedString, SharedUri,
-    TaskExt, Window, actions,
+    Action, App, AppContext as _, Context, Entity, ImageSource, ReadGlobal as _, Resource,
+    SharedString, SharedUri, TaskExt, Window, actions,
 };
 use language::{
     LanguageRegistry,
@@ -247,6 +249,8 @@ actions!(
         FocusRight,
         /// Opens the active thread as a markdown file.
         OpenActiveThreadAsMarkdown,
+        /// Opens the active panel thread as a center-pane editor item.
+        OpenThreadInEditor,
         /// Opens the agent diff view to review changes.
         OpenAgentDiff,
         /// Copies the current thread to the clipboard as JSON for debugging.
@@ -614,6 +618,7 @@ pub fn init(
         init_language_model_settings(cx);
     }
     agent_panel::init(cx);
+    agent_thread_item::init(cx);
     context_server_configuration::init(language_registry, fs.clone(), cx);
     thread_metadata_store::init(cx);
     terminal_thread_metadata_store::init(cx);
@@ -652,6 +657,72 @@ pub fn init(
         );
     })
     .detach();
+
+    // Open the active panel thread as a center-pane item.
+    cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
+        workspace.register_action(
+            |workspace: &mut Workspace,
+             _: &OpenThreadInEditor,
+             window: &mut Window,
+             cx: &mut Context<Workspace>| {
+                let Some(panel) = workspace.panel::<AgentPanel>(cx) else {
+                    return;
+                };
+
+                let (thread_id, conversation_view) = {
+                    let panel = panel.read(cx);
+                    let Some(cv) = panel.active_conversation_view() else {
+                        return;
+                    };
+                    (cv.read(cx).thread_id, cv.clone())
+                };
+
+                // If this thread is already open in a pane, just activate it.
+                let existing = workspace
+                    .active_pane()
+                    .read(cx)
+                    .items()
+                    .find_map(|item| {
+                        item.downcast::<agent_thread_item::AgentThreadItem>()
+                            .filter(|i| i.read(cx).thread_id() == thread_id)
+                    });
+                if let Some(existing) = existing {
+                    workspace.activate_item(&existing, true, true, window, cx);
+                    return;
+                }
+
+                // Take the thread out of the panel's live set so it's not
+                // shown in two places.
+                panel.update(cx, |panel, cx| {
+                    panel.threads().update(cx, |threads, _| {
+                        threads.take_thread(&thread_id);
+                    });
+                    panel.detach_active_thread(window, cx);
+                });
+
+                let workspace_id = workspace.database_id();
+                let item = cx.new(|cx| {
+                    agent_thread_item::AgentThreadItem::new(
+                        thread_id,
+                        conversation_view,
+                        workspace.weak_handle(),
+                        workspace_id,
+                        window,
+                        cx,
+                    )
+                });
+                workspace.add_item_to_active_pane(
+                    Box::new(item),
+                    None,
+                    true,
+                    window,
+                    cx,
+                );
+            },
+        );
+    })
+    .detach();
+
     cx.observe_new(ManageProfilesModal::register).detach();
     cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
         workspace.register_action(
