@@ -198,6 +198,7 @@ members = [
     "crates/streaming_diff",
     "crates/sum_tree",
     "crates/svg_preview",
+    "crates/typst_preview",
     "crates/system_specs",
     "crates/syntax_theme",
     "crates/tab_switcher",
@@ -398,6 +399,7 @@ markdown = { path = "crates/markdown" }
 markdown_preview = { path = "crates/markdown_preview" }
 mermaid_render = { path = "crates/mermaid_render" }
 svg_preview = { path = "crates/svg_preview" }
+typst_preview = { path = "crates/typst_preview" }
 media = { path = "crates/media" }
 menu = { path = "crates/menu" }
 mime = "0.3.17"
@@ -529,6 +531,8 @@ ashpd = { version = "0.13", default-features = false, features = [
     "settings",
     "trash"
 ] }
+atproto-identity = "0.14"
+atproto-oauth = "0.14"
 async-channel = "2.5.0"
 async-compat = "0.2.1"
 async-compression = { version = "0.4", features = ["bzip2", "gzip", "futures-io"] }
@@ -867,6 +871,9 @@ unicode-script = "0.5.7"
 unicode-segmentation = "1.10"
 unicode-width = "0.2"
 unindent = "0.2.0"
+typst = "0.15"
+typst-render = "0.15"
+typst-kit = "0.15"
 url = "2.2"
 urlencoding = "2.1.2"
 usvg = { version = "0.46.0", default-features = false }

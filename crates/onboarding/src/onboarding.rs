@@ -62,7 +62,7 @@ actions!(
         Finish,
         /// Sign in while in the onboarding flow.
         SignIn,
-        /// Open the user account in zed.dev while in the onboarding flow.
+        /// Open the user account in crow-ai.dev while in the onboarding flow.
         OpenAccount,
         /// Resets the welcome screen hints to their initial state.
         ResetHints

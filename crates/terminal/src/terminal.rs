@@ -4606,7 +4606,7 @@ mod tests {
 
     #[gpui::test]
     async fn test_hyperlink_ctrl_click_same_position(cx: &mut TestAppContext) {
-        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://crow-ai.dev/ for more\r\n");
 
         terminal.update(cx, |terminal, cx| {
             let click_position = point(px(80.0), px(10.0));
@@ -4625,7 +4625,7 @@ mod tests {
 
     #[gpui::test]
     async fn test_hyperlink_ctrl_click_same_position_in_mouse_mode(cx: &mut TestAppContext) {
-        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://crow-ai.dev/ for more\r\n");
 
         terminal.update(cx, |terminal, cx| {
             terminal.last_content.mode = Modes::MOUSE_MODE;
@@ -4654,7 +4654,7 @@ mod tests {
     ) {
         let terminal = init_ctrl_click_hyperlink_test(
             cx,
-            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+            b"Visit https://crow-ai.dev/ for more\r\nThis is another line\r\n",
         );
 
         terminal.update(cx, |terminal, cx| {
@@ -4692,7 +4692,7 @@ mod tests {
 
     #[gpui::test]
     async fn test_plain_click_on_hyperlink_in_mouse_mode_is_reported(cx: &mut TestAppContext) {
-        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://crow-ai.dev/ for more\r\n");
 
         terminal.update(cx, |terminal, cx| {
             terminal.last_content.mode = Modes::MOUSE_MODE;
@@ -4720,7 +4720,7 @@ mod tests {
 
     #[gpui::test]
     async fn test_ctrl_click_on_non_hyperlink_in_mouse_mode_is_reported(cx: &mut TestAppContext) {
-        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://crow-ai.dev/ for more\r\n");
 
         terminal.update(cx, |terminal, cx| {
             terminal.last_content.mode = Modes::MOUSE_MODE;
@@ -4749,7 +4749,7 @@ mod tests {
 
     #[gpui::test]
     async fn test_ctrl_click_in_mouse_mode_forwards_when_setting_disabled(cx: &mut TestAppContext) {
-        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://crow-ai.dev/ for more\r\n");
 
         cx.update_global(|store: &mut settings::SettingsStore, cx| {
             store.update_user_settings(cx, |settings| {
@@ -4787,7 +4787,7 @@ mod tests {
     async fn test_hyperlink_ctrl_click_drag_outside_bounds(cx: &mut TestAppContext) {
         let terminal = init_ctrl_click_hyperlink_test(
             cx,
-            b"Visit https://zed.dev/ for more\r\nThis is another line\r\n",
+            b"Visit https://crow-ai.dev/ for more\r\nThis is another line\r\n",
         );
 
         terminal.update(cx, |terminal, cx| {
@@ -4810,7 +4810,7 @@ mod tests {
 
     #[gpui::test]
     async fn test_hyperlink_ctrl_click_drag_within_bounds(cx: &mut TestAppContext) {
-        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://zed.dev/ for more\r\n");
+        let terminal = init_ctrl_click_hyperlink_test(cx, b"Visit https://crow-ai.dev/ for more\r\n");
 
         terminal.update(cx, |terminal, cx| {
             let down_position = point(px(70.0), px(10.0));

@@ -226,40 +226,44 @@ impl UserStore {
                         | Status::Reauthenticated
                         | Status::Connected { .. } => {
                             if let Some(user_id) = client.user_id() {
-                                let system_id =
-                                    client.telemetry().system_id().map(|id| id.to_string());
-                                let response = client
-                                    .cloud_client()
-                                    .get_authenticated_user(system_id)
-                                    .await
-                                    .log_err();
-
-                                let current_user_and_response = if let Some(response) = response {
-                                    let user = Arc::new(User {
+                                // Build the current user from the atproto profile
+                                // resolved during OAuth, falling back to the cloud
+                                // API for test/legacy compatibility.
+                                let user = if let Some(profile) = crate::atproto_auth::current_profile() {
+                                    Some(Arc::new(User {
                                         legacy_id: user_id,
-                                        username: response.user.username.clone().into(),
-                                        avatar_uri: response.user.avatar_url.clone().into(),
-                                        name: response.user.name.clone(),
-                                    });
-
-                                    Some((user, response))
+                                        username: profile.handle.clone().into(),
+                                        avatar_uri: profile.avatar_url.clone().unwrap_or_default().into(),
+                                        name: profile.display_name.clone().or_else(|| Some(profile.handle.clone())),
+                                    }))
                                 } else {
-                                    None
+                                    let system_id =
+                                        client.telemetry().system_id().map(|id| id.to_string());
+                                    client
+                                        .cloud_client()
+                                        .get_authenticated_user(system_id)
+                                        .await
+                                        .log_err()
+                                        .map(|response| {
+                                            Arc::new(User {
+                                                legacy_id: user_id,
+                                                username: response.user.username.clone().into(),
+                                                avatar_uri: response.user.avatar_url.clone().into(),
+                                                name: response.user.name.clone(),
+                                            })
+                                        })
                                 };
+
                                 current_user_tx
-                                    .send(
-                                        current_user_and_response
-                                            .as_ref()
-                                            .map(|(user, _)| user.clone()),
-                                    )
+                                    .send(user.clone())
                                     .await
                                     .ok();
 
                                 cx.update(|cx| {
-                                    if let Some((user, response)) = current_user_and_response {
+                                    if let Some(user) = user {
                                         this.update(cx, |this, cx| {
                                             this.users.insert(user_id, user);
-                                            this.update_authenticated_user(response, cx)
+                                            cx.notify();
                                         })
                                     } else {
                                         anyhow::Ok(())

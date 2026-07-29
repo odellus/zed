@@ -548,7 +548,7 @@ impl<TP: CloudLlmTokenProvider + 'static> LanguageModel for CloudLanguageModel<T
     }
 
     fn telemetry_id(&self) -> String {
-        format!("zed.dev/{}", self.model.id)
+        format!("crow/{}", self.model.id)
     }
 
     fn tool_input_format(&self) -> LanguageModelToolSchemaFormat {

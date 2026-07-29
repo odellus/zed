@@ -1,4 +1,4 @@
-//! The Zed Rust Extension API allows you write extensions for [Zed](https://zed.dev/) in Rust.
+//! The Zed Rust Extension API allows you write extensions for [Zed](https://crow-ai.dev/) in Rust.
 
 pub mod http_client;
 pub mod process;

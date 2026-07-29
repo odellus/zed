@@ -102,7 +102,7 @@ impl CloudApiClient {
             .build_zed_cloud_url("/")
             .ok()
             .and_then(|url| url.host_str().map(String::from))
-            .unwrap_or_else(|| "cloud.zed.dev".into())
+            .unwrap_or_else(|| "crow-ai.dev".into())
     }
 
     pub async fn get_authenticated_user(
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn build_session_authenticated_request_without_authorization_header() -> Result<()> {
         let request = build_request(
-            Request::builder().uri("https://cloud.zed.dev/client/users/me"),
+            Request::builder().uri("https://crow-ai.dev/client/users/me"),
             AsyncBody::default(),
             None,
         )?;
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn build_credentials_authenticated_request_with_authorization_header() -> Result<()> {
         let request = build_request(
-            Request::builder().uri("https://cloud.zed.dev/client/users/me"),
+            Request::builder().uri("https://crow-ai.dev/client/users/me"),
             AsyncBody::default(),
             Some(&Credentials {
                 user_id: 123,

@@ -1,0 +1,28 @@
+[package]
+name = "typst_preview"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/typst_preview.rs"
+
+[dependencies]
+multi_buffer.workspace = true
+editor.workspace = true
+file_icons.workspace = true
+gpui.workspace = true
+language.workspace = true
+ui.workspace = true
+workspace.workspace = true
+zed_actions.workspace = true
+typst.workspace = true
+typst-render.workspace = true
+typst-kit.workspace = true
+anyhow.workspace = true
+image.workspace = true
+log.workspace = true

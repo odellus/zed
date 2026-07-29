@@ -3863,7 +3863,7 @@ impl Project {
                         notification_id: format!("local-tasks-{path:?}").into(),
                         link: Some(ToastLink {
                             label: "Open Tasks Documentation",
-                            url: "https://zed.dev/docs/tasks",
+                            url: "https://crow-ai.dev/docs/tasks",
                         }),
                         message,
                     });

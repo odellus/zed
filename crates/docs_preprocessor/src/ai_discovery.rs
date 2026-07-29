@@ -306,7 +306,7 @@ fn split_fragment(path: &str) -> (&str, &str) {
 }
 
 pub(crate) fn rewrite_docs_links(contents: &str, site_url: &str) -> String {
-    const STABLE_DOCS_PREFIX: &str = "https://zed.dev/docs/";
+    const STABLE_DOCS_PREFIX: &str = "https://crow-ai.dev/docs/";
     let channel_docs_prefix = absolute_docs_url(site_url, Path::new(""));
     if channel_docs_prefix == STABLE_DOCS_PREFIX {
         return contents.to_string();
@@ -386,7 +386,7 @@ fn absolute_docs_url(site_url: &str, path: &Path) -> String {
     if url.starts_with("http://") || url.starts_with("https://") {
         url
     } else {
-        format!("https://zed.dev{}", url)
+        format!("https://crow-ai.dev{}", url)
     }
 }
 
@@ -430,10 +430,10 @@ mod tests {
     fn test_rewrite_docs_links_uses_channel_site_url() {
         assert_eq!(
             rewrite_docs_links(
-                "See [Code Actions](https://zed.dev/docs/configuring-languages#code-actions) and [Preview](https://zed.dev/docs/preview/ai/overview.html).",
+                "See [Code Actions](https://crow-ai.dev/docs/configuring-languages#code-actions) and [Preview](https://crow-ai.dev/docs/preview/ai/overview.html).",
                 "/docs/preview/"
             ),
-            "See [Code Actions](https://zed.dev/docs/preview/configuring-languages#code-actions) and [Preview](https://zed.dev/docs/preview/ai/overview.html)."
+            "See [Code Actions](https://crow-ai.dev/docs/preview/configuring-languages#code-actions) and [Preview](https://crow-ai.dev/docs/preview/ai/overview.html)."
         );
     }
 
@@ -521,18 +521,18 @@ mod tests {
         let llms_txt = std::fs::read_to_string(destination.join("llms.txt"))?;
         assert!(llms_txt.contains("## Docs"));
         assert!(llms_txt.contains(
-            "- [Getting Started](https://zed.dev/docs/getting-started.md): Start using Zed."
+            "- [Getting Started](https://crow-ai.dev/docs/getting-started.md): Start using Zed."
         ));
         assert!(llms_txt.contains("## AI"));
         assert!(
             llms_txt.contains(
-                "- [MCP](https://zed.dev/docs/ai/mcp.md): Connect model context servers."
+                "- [MCP](https://crow-ai.dev/docs/ai/mcp.md): Connect model context servers."
             )
         );
 
         let sitemap_xml = std::fs::read_to_string(destination.join("sitemap.xml"))?;
-        assert!(sitemap_xml.contains("<loc>https://zed.dev/docs/getting-started.html</loc>"));
-        assert!(sitemap_xml.contains("<loc>https://zed.dev/docs/ai/mcp.html</loc>"));
+        assert!(sitemap_xml.contains("<loc>https://crow-ai.dev/docs/getting-started.html</loc>"));
+        assert!(sitemap_xml.contains("<loc>https://crow-ai.dev/docs/ai/mcp.html</loc>"));
 
         let mcp_markdown = std::fs::read_to_string(destination.join("ai/mcp.md"))?;
         assert!(mcp_markdown.starts_with(

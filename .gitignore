@@ -44,6 +44,10 @@ crates/docs_preprocessor/actions.json
 .env
 .env.secret.toml
 
+# Logs
+*.log*
+
+
 # `nix build` output
 /result
 
