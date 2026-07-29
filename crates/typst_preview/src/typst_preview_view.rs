@@ -1,4 +1,3 @@
-use std::mem;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -15,7 +14,22 @@ use ui::prelude::*;
 use workspace::item::Item;
 use workspace::{Pane, Workspace};
 
+use typst::LibraryExt as _;
+
 use crate::{OpenFollowingPreview, OpenPreview, OpenPreviewToTheSide};
+
+fn is_typst_language(buffer: &Entity<MultiBuffer>, cx: &App) -> bool {
+    buffer.read_with(cx, |buffer, cx| {
+        buffer
+            .as_singleton()
+            .and_then(|b| {
+                b.read_with(cx, |b, _| {
+                    b.language().map(|l| l.name().as_ref() == "Typst")
+                })
+            })
+            .unwrap_or(false)
+    })
+}
 
 pub struct TypstPreviewView {
     focus_handle: FocusHandle,
@@ -34,7 +48,7 @@ pub enum TypstPreviewMode {
 }
 
 impl TypstPreviewView {
-    pub fn new(
+    fn create(
         mode: TypstPreviewMode,
         active_buffer: Entity<MultiBuffer>,
         workspace_handle: WeakEntity<Workspace>,
@@ -42,10 +56,10 @@ impl TypstPreviewView {
         cx: &mut Context<Workspace>,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            let workspace_subscription = if mode == TypstPreviewMode::Follow
-                && let Some(workspace) = workspace_handle.upgrade()
-            {
-                Some(Self::subscribe_to_workspace(workspace, window, cx))
+            let workspace_subscription = if mode == TypstPreviewMode::Follow {
+                workspace_handle.upgrade().map(|workspace| {
+                    Self::subscribe_to_workspace(workspace, window, cx)
+                })
             } else {
                 None
             };
@@ -63,7 +77,7 @@ impl TypstPreviewView {
                 error: None,
                 _refresh: Task::ready(()),
                 _buffer_subscription: subscription,
-                _workspace_subscription,
+                _workspace_subscription: workspace_subscription,
             };
 
             this.refresh(window, cx);
@@ -93,25 +107,14 @@ impl TypstPreviewView {
             window,
             move |this: &mut Self, workspace, event: &workspace::Event, window, cx| {
                 if let workspace::Event::ActiveItemChanged = event {
-                    let active = workspace
-                        .read(cx)
-                        .active_item(cx)
-                        .and_then(|item| item.act_as::<Editor>(cx));
-                    if let Some(editor) = active {
-                        let buffer = editor.read(cx).buffer().read(cx).as_singleton();
-                        if let Some(buffer) = buffer {
-                            let is_typst = buffer.read_with(cx, |b, _| {
-                                b.language()
-                                    .map(|l| l.name() == "Typst".into())
-                                    .unwrap_or(false)
-                            });
-                            if is_typst {
-                                this._buffer_subscription =
-                                    Some(Self::create_buffer_subscription(&buffer, window, cx));
-                                this.buffer = Some(buffer);
-                                this.refresh(window, cx);
-                                cx.notify();
-                            }
+                    if let Some(multi) = Self::resolve_active_typst_buffer(workspace.read(cx), cx) {
+                        let singleton = multi.read_with(cx, |mb, _| mb.as_singleton());
+                        if let Some(buffer) = singleton {
+                            this._buffer_subscription =
+                                Some(Self::create_buffer_subscription(&buffer, window, cx));
+                            this.buffer = Some(buffer);
+                            this.refresh(window, cx);
+                            cx.notify();
                         }
                     }
                 }
@@ -155,65 +158,63 @@ impl TypstPreviewView {
         });
     }
 
-    pub fn register(workspace: &mut Workspace, _window: &mut Window, _cx: &mut Context<Workspace>) {
-        workspace.register_action(|workspace, _: &OpenPreview, window, cx| {
-            Self::open(workspace, TypstPreviewMode::Default, window, cx);
-        });
-        workspace.register_action(|workspace, _: &OpenPreviewToTheSide, window, cx| {
-            Self::open_to_side(workspace, TypstPreviewMode::Default, window, cx);
-        });
-        workspace.register_action(|workspace, _: &OpenFollowingPreview, window, cx| {
-            Self::open(workspace, TypstPreviewMode::Follow, window, cx);
-        });
-    }
-
-    fn open(
-        workspace: &mut Workspace,
-        mode: TypstPreviewMode,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) {
-        let Some(buffer) = Self::active_typst_buffer(workspace, cx) else {
-            return;
-        };
-        let workspace_handle = cx.entity().downgrade();
-        let preview = Self::new(mode, buffer, workspace_handle, window, cx);
-        workspace.add_item_to_active_pane(Box::new(preview), None, true, cx);
-    }
-
-    fn open_to_side(
-        workspace: &mut Workspace,
-        mode: TypstPreviewMode,
-        window: &mut Window,
-        cx: &mut Context<Workspace>,
-    ) {
-        let Some(buffer) = Self::active_typst_buffer(workspace, cx) else {
-            return;
-        };
-        let workspace_handle = cx.entity().downgrade();
-        let preview = Self::new(mode, buffer, workspace_handle, window, cx);
-        workspace.split_item(
-            workspace::SplitDirection::Right,
-            Box::new(preview),
-            window,
-            cx,
-        );
-    }
-
-    fn active_typst_buffer(workspace: &Workspace, cx: &App) -> Option<Entity<MultiBuffer>> {
+    fn resolve_active_typst_buffer(
+        workspace: &Workspace,
+        cx: &App,
+    ) -> Option<Entity<MultiBuffer>> {
         let editor = workspace.active_item(cx)?.act_as::<Editor>(cx)?;
         let buffer = editor.read(cx).buffer().clone();
-        let is_typst = buffer.read_with(cx, |buffer, cx| {
-            buffer
-                .as_singleton()
-                .and_then(|b| {
-                    b.read_with(cx, |b, _| {
-                        b.language().map(|l| l.name() == "Typst".into())
-                    })
-                })
-                .unwrap_or(false)
+        is_typst_language(&buffer, cx).then_some(buffer)
+    }
+
+    fn activate_or_add_preview(
+        _workspace: &mut Workspace,
+        buffer: Entity<MultiBuffer>,
+        pane: Entity<Pane>,
+        focus: bool,
+        mode: TypstPreviewMode,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) {
+        let workspace_handle = cx.entity().downgrade();
+        let view = Self::create(mode, buffer, workspace_handle, window, cx);
+        pane.update(cx, |pane, cx| {
+            pane.add_item(Box::new(view), focus, focus, None, window, cx)
         });
-        is_typst.then_some(buffer)
+        cx.notify();
+    }
+
+    pub fn register(workspace: &mut Workspace, _window: &mut Window, _cx: &mut Context<Workspace>) {
+        workspace.register_action(move |workspace, _: &OpenPreview, window, cx| {
+            if let Some(buffer) = Self::resolve_active_typst_buffer(workspace, cx) {
+                let pane = workspace.active_pane().clone();
+                Self::activate_or_add_preview(
+                    workspace, buffer, pane, true, TypstPreviewMode::Default, window, cx,
+                );
+            }
+        });
+
+        workspace.register_action(move |workspace, _: &OpenPreviewToTheSide, window, cx| {
+            if let Some(buffer) = Self::resolve_active_typst_buffer(workspace, cx) {
+                let origin_pane = workspace.active_pane().clone();
+                let target_pane = workspace.adjacent_pane_of(&origin_pane, window, cx);
+                Self::activate_or_add_preview(
+                    workspace, buffer, target_pane, false, TypstPreviewMode::Default, window, cx,
+                );
+            }
+        });
+
+        workspace.register_action(move |workspace, _: &OpenFollowingPreview, window, cx| {
+            if let Some(buffer) = Self::resolve_active_typst_buffer(workspace, cx) {
+                let workspace_handle = cx.entity().downgrade();
+                let view =
+                    Self::create(TypstPreviewMode::Follow, buffer, workspace_handle, window, cx);
+                workspace.active_pane().update(cx, |pane, cx| {
+                    pane.add_item(Box::new(view), true, true, None, window, cx)
+                });
+                cx.notify();
+            }
+        });
     }
 }
 
@@ -221,7 +222,9 @@ impl TypstPreviewView {
 fn compile_typst(source: &str, path: Option<&Path>) -> Result<Vec<Arc<RenderImage>>> {
     let world = EditorWorld::new(source, path)?;
 
-    let document = typst::compile(&world).output.map_err(|diags| {
+    let result: typst::diag::SourceResult<typst_layout::PagedDocument> =
+        typst::compile(&world).output;
+    let document = result.map_err(|diags| {
         let msgs: Vec<String> = diags
             .iter()
             .map(|d| format!("{:?}: {}", d.severity, d.message))
@@ -231,10 +234,10 @@ fn compile_typst(source: &str, path: Option<&Path>) -> Result<Vec<Arc<RenderImag
 
     let mut pages = Vec::new();
     let opts = typst_render::RenderOptions::default();
-    for page in &document.pages {
+    for page in document.pages() {
         let pixmap = typst_render::render(page, &opts);
-        // tiny-skia Pixmap is RGBA premultiplied; un-premultiply for image crate
         let (w, h) = (pixmap.width(), pixmap.height());
+        // tiny-skia Pixmap is premultiplied RGBA; un-premultiply for image crate
         let mut rgba = pixmap.data().to_vec();
         for chunk in rgba.chunks_exact_mut(4) {
             let a = chunk[3] as f32;
@@ -248,7 +251,7 @@ fn compile_typst(source: &str, path: Option<&Path>) -> Result<Vec<Arc<RenderImag
         let image = image::RgbaImage::from_raw(w, h, rgba)
             .ok_or_else(|| anyhow::anyhow!("failed to create image from pixmap"))?;
         let frame = image::Frame::new(image);
-        pages.push(Arc::new(RenderImage::new(frame)));
+        pages.push(Arc::new(RenderImage::new(smallvec::smallvec![frame])));
     }
 
     Ok(pages)
@@ -270,7 +273,10 @@ impl EditorWorld {
             .unwrap_or(Path::new("."))
             .to_path_buf();
 
-        let main_id = typst::syntax::FileId::new(None, "main.typ".into());
+        let vpath = typst::syntax::VirtualPath::new("main.typ")
+            .map_err(|e| anyhow::anyhow!("bad vpath: {e}"))?;
+        let rooted = typst::syntax::RootedPath::new(typst::syntax::VirtualRoot::Project, vpath);
+        let main_id = typst::syntax::FileId::new(rooted);
         let source = typst::syntax::Source::new(main_id, source_text.to_string());
 
         let mut fonts = typst_kit::fonts::FontStore::new();
@@ -310,20 +316,20 @@ impl typst::World for EditorWorld {
         }
         let path = id
             .vpath()
-            .resolve(&self.root)
-            .ok_or_else(|| typst::diag::eco_format!("failed to resolve path for {id:?}"))?;
+            .realize(&self.root)
+            .map_err(|_| typst::diag::FileError::NotFound(self.root.clone()))?;
         let text = std::fs::read_to_string(&path)
-            .map_err(|e| typst::diag::eco_format!("failed to read {}: {e}", path.display()))?;
+            .map_err(|_| typst::diag::FileError::NotFound(path.clone()))?;
         Ok(typst::syntax::Source::new(id, text))
     }
 
     fn file(&self, id: typst::syntax::FileId) -> typst::diag::FileResult<typst::foundations::Bytes> {
         let path = id
             .vpath()
-            .resolve(&self.root)
-            .ok_or_else(|| typst::diag::eco_format!("failed to resolve path for {id:?}"))?;
+            .realize(&self.root)
+            .map_err(|_| typst::diag::FileError::NotFound(self.root.clone()))?;
         let data = std::fs::read(&path)
-            .map_err(|e| typst::diag::eco_format!("failed to read {}: {e}", path.display()))?;
+            .map_err(|_| typst::diag::FileError::NotFound(path.clone()))?;
         Ok(typst::foundations::Bytes::new(data))
     }
 
@@ -331,8 +337,11 @@ impl typst::World for EditorWorld {
         self.fonts.font(index)
     }
 
-    fn today(&self, offset: Option<i64>) -> Option<typst::foundations::Datetime> {
-        typst_kit::datetime::Time::system().datetime(offset)
+    fn today(
+        &self,
+        offset: Option<typst::foundations::Duration>,
+    ) -> Option<typst::foundations::Datetime> {
+        typst_kit::datetime::Time::system().today(offset)
     }
 }
 
@@ -346,36 +355,39 @@ impl Focusable for TypstPreviewView {
 
 impl Render for TypstPreviewView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        v_flex()
+            .id("TypstPreview")
+            .key_context("TypstPreview")
             .track_focus(&self.focus_handle)
             .size_full()
-            .overflow_y_scrollbar()
             .bg(cx.theme().colors().editor_background)
-            .children(if let Some(error) = &self.error {
-                vec![div()
-                    .p_4()
-                    .child(
-                        Label::new(format!("Typst compilation error:\n{error}"))
-                            .color(Color::Error),
+            .map(|this| {
+                if let Some(error) = &self.error {
+                    this.child(
+                        div()
+                            .p_4()
+                            .child(
+                                Label::new(format!("Typst error:\n{error}")).color(Color::Error),
+                            )
+                            .into_any_element(),
                     )
-                    .into_any_element()]
-            } else if self.pages.is_empty() {
-                vec![div()
-                    .p_4()
-                    .child(Label::new("No Typst content to preview.").color(Color::Muted))
-                    .into_any_element()]
-            } else {
-                self.pages
-                    .iter()
-                    .map(|page| {
+                } else if self.pages.is_empty() {
+                    this.child(
+                        div()
+                            .p_4()
+                            .child(Label::new("No Typst content.").color(Color::Muted))
+                            .into_any_element(),
+                    )
+                } else {
+                    this.children(self.pages.iter().map(|page| {
                         div()
                             .flex()
                             .justify_center()
                             .p_2()
-                            .child(img(page.clone()))
+                            .child(img(page.clone()).max_w_full())
                             .into_any_element()
-                    })
-                    .collect()
+                    }))
+                }
             })
     }
 }
@@ -383,8 +395,8 @@ impl Render for TypstPreviewView {
 impl Item for TypstPreviewView {
     type Event = ();
 
-    fn tab_content_text(&self, _cx: &App) -> Option<SharedString> {
-        Some("Typst Preview".into())
+    fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
+        "Typst Preview".into()
     }
 
     fn tab_icon(&self, _window: &Window, cx: &App) -> Option<Icon> {

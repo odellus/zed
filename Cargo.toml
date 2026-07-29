@@ -872,8 +872,9 @@ unicode-segmentation = "1.10"
 unicode-width = "0.2"
 unindent = "0.2.0"
 typst = "0.15"
+typst-layout = "0.15"
 typst-render = "0.15"
-typst-kit = "0.15"
+typst-kit = { version = "0.15", features = ["embedded-fonts", "scan-fonts", "datetime"] }
 url = "2.2"
 urlencoding = "2.1.2"
 usvg = { version = "0.46.0", default-features = false }

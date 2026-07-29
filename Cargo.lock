@@ -21095,12 +21095,16 @@ version = "0.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27ee52e27dfab0da5ac3d19e7e43a21fbc7ff83af9301119468bae89fa857a8b"
 dependencies = [
+ "chrono",
+ "dirs",
  "ecow",
+ "fontdb",
  "once_cell",
  "parking_lot",
  "rustc-hash 2.1.1",
  "serde",
  "serde_json",
+ "typst-assets",
  "typst-library",
  "typst-syntax",
  "typst-timing",
@@ -21352,8 +21356,10 @@ dependencies = [
  "language",
  "log",
  "multi_buffer",
+ "smallvec",
  "typst",
  "typst-kit",
+ "typst-layout",
  "typst-render",
  "ui",
  "workspace",
