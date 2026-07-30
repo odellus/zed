@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Build & install crow from source into ~/.local, mirroring zed's layout so the
+# `crow` command launches the GUI detached (async -- the terminal returns at
+# once and is NOT filled with the GUI's logs).
+#
+# Layout (same idea as zed's script/bundle-linux + script/install.sh):
+#   ~/.local/crow.app/libexec/crow   <- GUI binary (the `zed` crate, bin `crow`)
+#   ~/.local/crow.app/bin/crow       <- CLI binary (the `cli` crate)
+#   ~/.local/crow.app/share/icons/...            <- app icon
+#   ~/.local/crow.app/share/applications/...     <- desktop entry (Exec = CLI)
+#   ~/.local/bin/crow                ->  ~/.local/crow.app/bin/crow
+#
+# The CLI binary finds the GUI at ../libexec/crow relative to itself
+# (crates/cli/src/main.rs, linux `Detect`), then fork/setsid/exec's it with its
+# file descriptors closed -- so `crow` returns your prompt immediately instead
+# of holding the terminal and dumping logs into it.
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+JOBS=6
+if [[ "${1-}" == "-j" ]]; then
+    JOBS="${2:?-j requires a job count, e.g. -j 6}"
+fi
+
+APPDIR="$HOME/.local/crow.app"
+APPID="dev.crow.Crow"
+ICON="crates/zed/resources/app-icon-dev.png"
+ICON2X="crates/zed/resources/app-icon-dev@2x.png"
+
+echo "==> Building crow + cli (release, -j $JOBS)..."
+cargo build --release -j "$JOBS" -p zed -p cli
+
+echo "==> Installing to $APPDIR..."
+rm -rf "$APPDIR"
+mkdir -p "$APPDIR/bin" "$APPDIR/libexec"
+mkdir -p "$APPDIR/share/applications"
+mkdir -p "$APPDIR/share/icons/hicolor/512x512/apps"
+mkdir -p "$APPDIR/share/icons/hicolor/1024x1024/apps"
+
+# GUI binary -> libexec (the path the CLI looks for: ../libexec/crow)
+cp target/release/crow "$APPDIR/libexec/crow"
+# CLI binary -> bin (this is what goes on PATH; it spawns the GUI detached)
+cp target/release/cli "$APPDIR/bin/crow"
+
+# Icons
+cp "$ICON"   "$APPDIR/share/icons/hicolor/512x512/apps/crow.png"
+cp "$ICON2X" "$APPDIR/share/icons/hicolor/1024x1024/apps/crow.png"
+
+# Desktop entry: Exec points at the CLI (which spawns the GUI), like zed.
+cat > "$APPDIR/share/applications/${APPID}.desktop" << EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Crow
+Comment=Crow AI Dev Environment
+Exec=$APPDIR/bin/crow %U
+Icon=$APPDIR/share/icons/hicolor/512x512/apps/crow.png
+Terminal=false
+Categories=Development;IDE;TextEditor;
+MimeType=text/plain;inode/directory;
+StartupNotify=true
+StartupWMClass=$APPID
+EOF
+
+# Remove stale Zed desktop entries from earlier installs (they show the old
+# "skull" icon and point at binaries that no longer exist).
+rm -f "$HOME/.local/share/applications/dev.zed.Zed.desktop" \
+      "$HOME/.local/share/applications/dev.zed.Zed-Dev.desktop" \
+      "$HOME/.local/share/applications/dev.zed.Zed-Nightly.desktop" \
+      "$HOME/.local/share/applications/dev.zed.Zed-Preview.desktop" 2>/dev/null || true
+
+# Register desktop entry
+mkdir -p "$HOME/.local/share/applications"
+cp "$APPDIR/share/applications/${APPID}.desktop" "$HOME/.local/share/applications/"
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+fi
+
+# Bust the icon cache so the launcher/dock picks up the new crow icon instead
+# of a stale skull or the generic gear placeholder.
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+fi
+rm -f "$HOME/.cache/icon-cache.kcache" "$HOME/.cache/icon-cache.kcache"* \
+      "$HOME/.cache/ksycoca"* "$HOME/.cache/icontheme.cache" 2>/dev/null || true
+# Touch the desktop file so running shells (GNOME/KDE) re-read it.
+touch "$HOME/.local/share/applications/${APPID}.desktop"
+
+echo
+echo "==> Crow installed."
+if command -v crow >/dev/null 2>&1; then
+    echo "    Run with: crow   (launches detached; your prompt returns at once)"
+else
+    echo "    Add ~/.local/bin to your PATH, then run: crow"
+fi
+echo "    CLI:     $APPDIR/bin/crow"
+echo "    GUI:     $APPDIR/libexec/crow"
+echo "    Desktop: $HOME/.local/share/applications/${APPID}.desktop"

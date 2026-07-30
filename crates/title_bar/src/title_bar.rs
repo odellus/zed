@@ -355,7 +355,10 @@ impl Render for TitleBar {
         let is_signed_out_or_auth_error = user.is_none()
             && matches!(
                 status,
-                client::Status::SignedOut | client::Status::AuthenticationError
+                client::Status::SignedOut
+                    | client::Status::AuthenticationError
+                    | client::Status::ConnectionError
+                    | client::Status::ConnectionLost
             );
 
         children.push(

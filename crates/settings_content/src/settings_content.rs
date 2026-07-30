@@ -252,6 +252,12 @@ pub struct SettingsContent {
     /// The URL of the Zed server to connect to.
     pub server_url: Option<String>,
 
+    /// The URL of the atproto Personal Data Server (PDS) for authentication.
+    ///
+    /// Defaults to `https://bsky.social`. Override with the `CROW_PDS_URL`
+    /// environment variable.
+    pub pds_url: Option<String>,
+
     /// The URL used as the key for credential storage.
     ///
     /// When set, credentials are stored under this URL instead of `server_url`.

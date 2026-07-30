@@ -2724,7 +2724,7 @@ impl CollabPanel {
                 if is_busy {
                     "Signing in…"
                 } else {
-                    "Sign In with GitHub"
+                    "Sign In"
                 },
                 IconName::Github,
             )
@@ -2748,9 +2748,8 @@ impl CollabPanel {
                         let workspace = this.workspace.clone();
                         cx.spawn_in(window, async move |_, mut cx| {
                             client
-                                .connect(true, &mut cx)
+                                .sign_in_with_optional_connect(true, &mut cx)
                                 .await
-                                .into_response()
                                 .notify_workspace_async_err(workspace, &mut cx);
                         })
                         .detach()

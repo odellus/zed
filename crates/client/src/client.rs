@@ -104,6 +104,8 @@ actions!(
 #[derive(Deserialize, RegisterSetting)]
 pub struct ClientSettings {
     pub server_url: String,
+    /// The atproto PDS URL for authentication.
+    pub pds_url: String,
     /// Overrides the key used to store credentials in the system keychain.
     /// Defaults to `server_url` when unset.
     ///
@@ -117,14 +119,21 @@ pub struct ClientSettings {
 
 impl Settings for ClientSettings {
     fn from_settings(content: &settings::SettingsContent) -> Self {
+        let pds_url = std::env::var("CROW_PDS_URL")
+            .ok()
+            .or_else(|| content.pds_url.clone())
+            .unwrap_or_else(|| "https://bsky.social".to_string());
+
         if let Some(server_url) = &*ZED_SERVER_URL {
             return Self {
                 server_url: server_url.clone(),
+                pds_url,
                 credentials_url: content.credentials_url.clone(),
             };
         }
         Self {
             server_url: content.server_url.clone().unwrap(),
+            pds_url,
             credentials_url: content.credentials_url.clone(),
         }
     }
@@ -1136,8 +1145,7 @@ impl Client {
             return callback(cx);
         }
 
-        let pds_url = std::env::var("CROW_PDS_URL")
-            .unwrap_or_else(|_| "https://bsky.social".to_string());
+        let pds_url = cx.update(|cx| ClientSettings::get_global(cx).pds_url.clone());
 
         gpui_tokio::Tokio::spawn_result(cx, async move {
             let creds = atproto_auth::authenticate_with_pds(&pds_url).await?;
@@ -1397,6 +1405,7 @@ impl Client {
     pub async fn sign_out(self: &Arc<Self>, cx: &AsyncApp) {
         self.state.write().credentials = None;
         self.cloud_client.clear_credentials();
+        atproto_auth::clear_saved_profile();
         self.disconnect(cx);
 
         if self.has_credentials(cx).await {

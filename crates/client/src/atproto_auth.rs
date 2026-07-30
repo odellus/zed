@@ -29,7 +29,7 @@ use url::Url;
 const CLIENT_ID: &str = "https://crow-ai.dev/oauth-client-metadata.json";
 
 /// Resolved atproto profile for the authenticated user.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AtprotoProfile {
     pub did: String,
     pub handle: String,
@@ -43,6 +43,34 @@ static ATPROTO_PROFILE: OnceLock<AtprotoProfile> = OnceLock::new();
 /// Returns the atproto profile resolved during authentication, if any.
 pub fn current_profile() -> Option<&'static AtprotoProfile> {
     ATPROTO_PROFILE.get()
+}
+
+fn profile_path() -> std::path::PathBuf {
+    paths::config_dir().join("crow_profile.json")
+}
+
+/// Save the profile to disk so it survives restarts.
+fn save_profile(profile: &AtprotoProfile) {
+    if let Ok(json) = serde_json::to_string(profile) {
+        std::fs::write(profile_path(), json).ok();
+    }
+}
+
+/// Load a previously saved profile from disk and populate ATPROTO_PROFILE.
+/// Returns the profile if one was found and loaded.
+pub fn load_saved_profile() -> Option<&'static AtprotoProfile> {
+    if ATPROTO_PROFILE.get().is_some() {
+        return ATPROTO_PROFILE.get();
+    }
+    let json = std::fs::read_to_string(profile_path()).ok()?;
+    let profile: AtprotoProfile = serde_json::from_str(&json).ok()?;
+    let _ = ATPROTO_PROFILE.set(profile);
+    ATPROTO_PROFILE.get()
+}
+
+/// Delete the saved profile file (called on sign-out).
+pub fn clear_saved_profile() {
+    std::fs::remove_file(profile_path()).ok();
 }
 
 /// Result of a successful atproto OAuth flow.
@@ -213,6 +241,7 @@ pub async fn authenticate_with_pds(pds_url: &str) -> Result<AtprotoCredentials> 
     let handle = profile.as_ref().map(|p| p.handle.clone());
     if let Some(profile) = profile {
         eprintln!("[atproto] Resolved profile: @{}", profile.handle);
+        save_profile(&profile);
         let _ = ATPROTO_PROFILE.set(profile);
     }
 

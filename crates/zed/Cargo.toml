@@ -6,7 +6,7 @@ version = "1.14.0"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["Zed Team <hi@zed.dev>"]
-default-run = "zed"
+default-run = "crow"
 
 [lints]
 workspace = true
@@ -54,7 +54,7 @@ visual-tests = [
 ]
 
 [[bin]]
-name = "zed"
+name = "crow"
 path = "src/main.rs"
 
 [[bin]]
@@ -193,7 +193,6 @@ smol.workspace = true
 snippet_provider.workspace = true
 snippets_ui.workspace = true
 svg_preview.workspace = true
-typst_preview.workspace = true
 sysinfo.workspace = true
 tab_switcher.workspace = true
 task.workspace = true

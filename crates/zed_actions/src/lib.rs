@@ -887,20 +887,6 @@ pub mod preview {
             ]
         );
     }
-
-    pub mod typst {
-        use gpui::actions;
-
-        actions!(
-            typst,
-            [
-                /// Opens a Typst preview for the current file.
-                OpenPreview,
-                /// Opens a Typst preview in a split pane.
-                OpenPreviewToTheSide,
-            ]
-        );
-    }
 }
 
 pub mod agents_sidebar {
