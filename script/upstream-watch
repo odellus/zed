@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+#
+# upstream-watch — report new upstream zed activity since the last run.
+#
+# Fetches `upstream` (zed-industries/zed), diffs against a stored last-seen
+# SHA, and writes a digest of new commits on upstream/main plus any new tag.
+# Run ad-hoc for an on-demand check, or via cron for a near-daily alert.
+#
+# State lives in .git/ (never pollutes the tree):
+#   .git/upstream-watch-last-sha
+#   .git/upstream-watch-last-tag
+#
+# Digest log (override with UPSTREAM_WATCH_LOG):
+#   ~/.crow/notes/dev/upstream-zed-digest.md
+
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+REMOTE=upstream
+BRANCH=main
+STATE_SHA=.git/upstream-watch-last-sha
+STATE_TAG=.git/upstream-watch-last-tag
+LOG="${UPSTREAM_WATCH_LOG:-$HOME/.crow/notes/dev/upstream-zed-digest.md}"
+
+# --force: upstream re-points moving tags (nightly, collab-staging); let them
+# update rather than failing the fetch.
+git fetch "$REMOTE" --tags --force --quiet
+
+head_sha=$(git rev-parse "$REMOTE/$BRANCH")
+head_short=$(git rev-parse --short "$REMOTE/$BRANCH")
+last_sha=$(cat "$STATE_SHA" 2>/dev/null || true)
+
+# Track only real release tags (v0.123.4), not rolling nightly/collab-staging.
+new_tag=$(git for-each-ref refs/tags --sort=-creatordate --format='%(refname:short)' | grep -E '^v[0-9]' | head -1 || true)
+last_tag=$(cat "$STATE_TAG" 2>/dev/null || true)
+
+now=$(date '+%Y-%m-%d %H:%M')
+new_count=0
+out="## $now — "
+
+if [[ -z "$last_sha" ]]; then
+  out+="first run, last 14 days of $REMOTE/$BRANCH (head $head_short)"$'\n'
+  out+=$'\n```'$'\n'
+  out+="$(git --no-pager log --oneline --since=14.days "$REMOTE/$BRANCH")"$'\n'
+  out+=$'```'$'\n'
+elif [[ "$last_sha" == "$head_sha" ]]; then
+  out+="no new commits on $REMOTE/$BRANCH (still at $head_short)"$'\n'
+else
+  new_count=$(git rev-list --count "$last_sha..$head_sha")
+  out+="$new_count new commit(s) on $REMOTE/$BRANCH (up to $head_short)"$'\n'
+  out+=$'\n```'$'\n'
+  out+="$(git --no-pager log --oneline "$last_sha..$head_sha" | head -100)"$'\n'
+  out+=$'```'$'\n'
+fi
+
+if [[ -n "$new_tag" && "$new_tag" != "$last_tag" ]]; then
+  out+=$'\n'"**New tag:** \`$new_tag\` (was: ${last_tag:-none})"$'\n'
+fi
+
+mkdir -p "$(dirname "$LOG")"
+printf '%s\n---\n\n' "$out" | tee -a "$LOG"
+
+echo "$head_sha" > "$STATE_SHA"
+[[ -n "$new_tag" ]] && echo "$new_tag" > "$STATE_TAG"
+
+# Desktop alert when there are genuinely new commits and notify-send exists.
+if [[ "$new_count" -gt 0 ]] && command -v notify-send >/dev/null 2>&1; then
+  notify-send "crow upstream-watch" "$new_count new upstream zed commit(s) — head $head_short"
+fi
