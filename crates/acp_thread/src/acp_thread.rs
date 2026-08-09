@@ -4219,13 +4219,33 @@ impl AcpThread {
         let action_log = self.action_log.clone();
         let should_update_agent_location = self.parent_session_id.is_none();
         cx.spawn(async move |this, cx| {
+            // crow: if the path is outside every project worktree, fall back to a
+            // direct filesystem read instead of erroring — agent fs is not
+            // worktree-scoped. The editor-buffer path below is unchanged.
+            let project_path = project.update(cx, |project, cx| {
+                project.project_path_for_absolute_path(&path, cx)
+            });
+            let Some(project_path) = project_path else {
+                let fs = project.update(cx, |project, _| project.fs().clone());
+                let text = fs.load(&path).await.map_err(|e| {
+                    acp::Error::resource_not_found(Some(format!("{}: {e}", path.display())))
+                })?;
+                let lines = text.lines().collect::<Vec<_>>();
+                let start = line as usize;
+                if start > lines.len() {
+                    return Err(acp::Error::invalid_params().data(format!(
+                        "Attempting to read beyond the end of the file, line {}",
+                        lines.len() + 1,
+                    )));
+                }
+                let end = (line as u64)
+                    .saturating_add(limit as u64)
+                    .min(lines.len() as u64) as usize;
+                return Ok(lines[start..end].join("\n"));
+            };
+
             let load = project.update(cx, |project, cx| {
-                let path = project
-                    .project_path_for_absolute_path(&path, cx)
-                    .ok_or_else(|| {
-                        acp::Error::resource_not_found(Some(path.display().to_string()))
-                    })?;
-                Ok::<_, acp::Error>(project.open_buffer(path, cx))
+                Ok::<_, acp::Error>(project.open_buffer(project_path, cx))
             })?;
 
             let buffer = load.await?;
@@ -4294,11 +4314,26 @@ impl AcpThread {
         let action_log = self.action_log.clone();
         let should_update_agent_location = self.parent_session_id.is_none();
         cx.spawn(async move |this, cx| {
+            // crow: outside every project worktree -> direct filesystem write,
+            // bypassing the editor buffer model (no transaction/format-on-save).
+            let project_path = project.update(cx, |project, cx| {
+                project.project_path_for_absolute_path(&path, cx)
+            });
+            let Some(project_path) = project_path else {
+                let fs = project.update(cx, |project, _| project.fs().clone());
+                if let Some(parent) = path.parent() {
+                    fs.create_dir(parent)
+                        .await
+                        .context("creating parent directory")?;
+                }
+                fs.write(&path, content.as_bytes())
+                    .await
+                    .with_context(|| format!("writing {}", path.display()))?;
+                return Ok(());
+            };
+
             let load = project.update(cx, |project, cx| {
-                let path = project
-                    .project_path_for_absolute_path(&path, cx)
-                    .context("invalid path")?;
-                anyhow::Ok(project.open_buffer(path, cx))
+                anyhow::Ok(project.open_buffer(project_path, cx))
             });
             let buffer = load?.await?;
             let snapshot = this.update(cx, |this, cx| {

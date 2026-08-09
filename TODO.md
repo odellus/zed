@@ -33,6 +33,30 @@ citizen.** Most of the rough edges live at that seam.
   sessions; agent identity under delegation ("what did *you* say" when a session
   has agents a1–a3).
 
+### ~~Client-side `read`/`write` tools scoped to the project-root cwd~~ — FIXED 2026-07-31
+- **Date found:** 2026-07-31
+- **Symptom:** The agent's `read`/`write` tools (client-side, ACP
+  `fs/read_text_file` / `fs/write_text_file`) only operated inside a project
+  worktree. Paths outside the worktree roots (e.g. `~/.crow/notes/`,
+  `~/.crow/skills/`) failed — read with "Resource not found", write with a
+  generic "Internal error". Root cause: `acp_thread.rs` gated both on
+  `project_path_for_absolute_path(...)`, which returns `None` for any path not
+  contained in a worktree, and otherwise routed everything through the editor
+  Buffer model.
+- **Fix:** Added a fallback in `crates/acp_thread/src/acp_thread.rs`
+  `read_text_file` / `write_text_file`: when the path is outside every worktree,
+  do direct I/O via the project's `Fs` service (`fs.load` / `fs.write` /
+  `fs.create_dir`) instead of erroring. In-worktree paths still go through the
+  editor Buffer model (transactions, format-on-save, action-log) unchanged.
+  Using `Fs` (not raw `smol::fs`) keeps it on the deterministic test scheduler,
+  so the `FakeFs`-backed unit tests still pass. Verified end-to-end in the
+  running editor.
+- **Merge-gate implication:** this is a Category-B crow modification to a shared,
+  frequently-edited upstream file. Upstream merges touching
+  `read_text_file`/`write_text_file` must PRESERVE the out-of-worktree fallback.
+  Added to the protected manifest. Characterization-test candidate: reading a
+  path outside every worktree succeeds (no `ResourceNotFound`).
+
 ---
 
 ## Tasks
