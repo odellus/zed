@@ -351,6 +351,7 @@ impl VsCodeSettings {
                 "never" => Some(false),
                 _ => None,
             }),
+            git_gutter_width: None,
         })
     }
 
@@ -908,6 +909,7 @@ impl VsCodeSettings {
             default_height: None,
             default_width: None,
             dock: None,
+            starts_open: None,
             font_fallbacks,
             font_family,
             font_features: None,
