@@ -1244,9 +1244,10 @@ mod windows {
                 let cli = std::env::current_exe()?;
                 let dir = cli.parent().context("no parent path for cli")?;
 
-                // ../Zed.exe is the standard, lib/zed is for MSYS2, ./zed.exe is for the target
+                // ../crow.exe is the standard, lib/crow is for MSYS2, ./crow.exe is for the target
                 // directory in development builds.
-                let possible_locations = ["../Zed.exe", "../lib/zed/zed-editor.exe", "./zed.exe"];
+                let possible_locations =
+                    ["../crow.exe", "../lib/crow/crow.exe", "./crow.exe"];
                 possible_locations
                     .iter()
                     .find_map(|p| dir.join(p).canonicalize().ok().filter(|path| path != &cli))
